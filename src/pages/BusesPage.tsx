@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import {
   Bus as BusIcon, Search, Plus, Filter, Download, Edit2, Trash2,
-  Eye, CheckCircle, AlertTriangle, Shield, Calendar, Fuel, Gauge, User, FileText
+  Eye, Shield
 } from 'lucide-react';
 import { useFleetData } from '../hooks/useFleetData';
+import { useAuth } from '../context/AuthContext';
 import { Bus, VehicleStatus, FuelType } from '../types';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
+import { DocumentUploader, StoredDocument } from '../components/common/DocumentUploader';
 import { formatDate, formatDistance } from '../utils/formatters';
 import { exportToCsv } from '../utils/exportCsv';
 
@@ -20,12 +22,34 @@ export const BusesPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
 
+  const { isAdmin, isSuperAdmin, hasRole } = useAuth();
+  const canUploadDocs = isSuperAdmin || isAdmin || hasRole(['Fleet Manager', 'Admin', 'Super Admin']);
+  const canDeleteDocs = isSuperAdmin || isAdmin;
+
   // Modals state
   const [isAddEditOpen, setIsAddEditOpen] = useState(false);
   const [editingBus, setEditingBus] = useState<Bus | null>(null);
   const [viewingBus, setViewingBus] = useState<Bus | null>(null);
-  const [viewTab, setViewTab] = useState<'info' | 'trips' | 'maintenance' | 'fuel'>('info');
+  const [viewTab, setViewTab] = useState<'info' | 'trips' | 'maintenance' | 'fuel' | 'documents'>('info');
   const [deletingBusId, setDeletingBusId] = useState<string | null>(null);
+
+  // Vehicle Documents Registry
+  const [busDocuments, setBusDocuments] = useState<Record<string, Record<string, StoredDocument>>>({
+    'b1': {
+      rc: {
+        name: 'RC_KA01MH1024_Certified.pdf',
+        path: '00000000-0000-0000-0000-000000000001/vehicles/b1/registration_rc.pdf',
+        size: 1420000,
+        uploadedAt: '2026-01-15'
+      },
+      insurance: {
+        name: 'ICICI_Lombard_Comprehensive_Policy.pdf',
+        path: '00000000-0000-0000-0000-000000000001/vehicles/b1/insurance_policy.pdf',
+        size: 2850000,
+        uploadedAt: '2026-01-10'
+      }
+    }
+  });
 
   // Form State
   const initialFormState: Omit<Bus, 'id'> = {
@@ -497,17 +521,18 @@ export const BusesPage: React.FC = () => {
           maxWidth="max-w-3xl"
         >
           {/* Subtabs */}
-          <div className="flex items-center gap-2 border-b border-white/10 pb-3 mb-6">
+          <div className="flex items-center gap-2 border-b border-white/10 pb-3 mb-6 overflow-x-auto">
             {[
               { id: 'info', label: 'Vehicle Specs' },
               { id: 'trips', label: 'Trip History' },
               { id: 'maintenance', label: 'Maintenance' },
               { id: 'fuel', label: 'Fuel Records' },
+              { id: 'documents', label: 'Compliance Docs' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setViewTab(tab.id as any)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
                   viewTab === tab.id
                     ? 'bg-[#00C2FF] text-slate-950'
                     : 'text-slate-400 hover:text-white hover:bg-white/5'
@@ -637,6 +662,148 @@ export const BusesPage: React.FC = () => {
                   </div>
                 ))
               )}
+            </div>
+          )}
+
+          {viewTab === 'documents' && (
+            <div className="space-y-4">
+              <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs text-blue-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-[#00C2FF] shrink-0" />
+                  <span>Private Encrypted Document Vault • Row Level Security & Signed URL Protection</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400 bg-black/20 px-2 py-0.5 rounded">bucket: vehicle-documents</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <DocumentUploader
+                  bucket="vehicle-documents"
+                  entityId={viewingBus.id}
+                  category="rc_book"
+                  label="Registration Certificate (RC Book)"
+                  description="Official Transport Dept Smart Card / Registration Book"
+                  currentDocument={busDocuments[viewingBus.id]?.rc || null}
+                  readOnly={!canUploadDocs}
+                  onUploadSuccess={(res) => {
+                    setBusDocuments(prev => ({
+                      ...prev,
+                      [viewingBus.id]: {
+                        ...(prev[viewingBus.id] || {}),
+                        rc: {
+                          name: res.path.split('/').pop() || 'RC_Book.pdf',
+                          path: res.path,
+                          url: res.signedUrl,
+                          size: res.fileSize,
+                          uploadedAt: new Date().toISOString()
+                        }
+                      }
+                    }));
+                  }}
+                  onRemoveDocument={canDeleteDocs ? () => {
+                    setBusDocuments(prev => {
+                      const updated = { ...(prev[viewingBus.id] || {}) };
+                      delete updated.rc;
+                      return { ...prev, [viewingBus.id]: updated };
+                    });
+                  } : undefined}
+                />
+
+                <DocumentUploader
+                  bucket="vehicle-documents"
+                  entityId={viewingBus.id}
+                  category="insurance_policy"
+                  label="Commercial Comprehensive Insurance"
+                  description={`Coverage policy valid until ${formatDate(viewingBus.insurance_expiry)}`}
+                  currentDocument={busDocuments[viewingBus.id]?.insurance || null}
+                  readOnly={!canUploadDocs}
+                  onUploadSuccess={(res) => {
+                    setBusDocuments(prev => ({
+                      ...prev,
+                      [viewingBus.id]: {
+                        ...(prev[viewingBus.id] || {}),
+                        insurance: {
+                          name: res.path.split('/').pop() || 'Insurance_Policy.pdf',
+                          path: res.path,
+                          url: res.signedUrl,
+                          size: res.fileSize,
+                          uploadedAt: new Date().toISOString()
+                        }
+                      }
+                    }));
+                  }}
+                  onRemoveDocument={canDeleteDocs ? () => {
+                    setBusDocuments(prev => {
+                      const updated = { ...(prev[viewingBus.id] || {}) };
+                      delete updated.insurance;
+                      return { ...prev, [viewingBus.id]: updated };
+                    });
+                  } : undefined}
+                />
+
+                <DocumentUploader
+                  bucket="vehicle-documents"
+                  entityId={viewingBus.id}
+                  category="fitness_certificate"
+                  label="RTO Annual Fitness Certificate"
+                  description="Mandatory annual state mechanical inspection certificate"
+                  currentDocument={busDocuments[viewingBus.id]?.fitness || null}
+                  readOnly={!canUploadDocs}
+                  onUploadSuccess={(res) => {
+                    setBusDocuments(prev => ({
+                      ...prev,
+                      [viewingBus.id]: {
+                        ...(prev[viewingBus.id] || {}),
+                        fitness: {
+                          name: res.path.split('/').pop() || 'Fitness_Certificate.pdf',
+                          path: res.path,
+                          url: res.signedUrl,
+                          size: res.fileSize,
+                          uploadedAt: new Date().toISOString()
+                        }
+                      }
+                    }));
+                  }}
+                  onRemoveDocument={canDeleteDocs ? () => {
+                    setBusDocuments(prev => {
+                      const updated = { ...(prev[viewingBus.id] || {}) };
+                      delete updated.fitness;
+                      return { ...prev, [viewingBus.id]: updated };
+                    });
+                  } : undefined}
+                />
+
+                <DocumentUploader
+                  bucket="vehicle-documents"
+                  entityId={viewingBus.id}
+                  category="state_permit"
+                  label="All-India / Interstate Tourist Permit"
+                  description="Valid tourist permit for interstate operations"
+                  currentDocument={busDocuments[viewingBus.id]?.permit || null}
+                  readOnly={!canUploadDocs}
+                  onUploadSuccess={(res) => {
+                    setBusDocuments(prev => ({
+                      ...prev,
+                      [viewingBus.id]: {
+                        ...(prev[viewingBus.id] || {}),
+                        permit: {
+                          name: res.path.split('/').pop() || 'Tourist_Permit.pdf',
+                          path: res.path,
+                          url: res.signedUrl,
+                          size: res.fileSize,
+                          uploadedAt: new Date().toISOString()
+                        }
+                      }
+                    }));
+                  }}
+                  onRemoveDocument={canDeleteDocs ? () => {
+                    setBusDocuments(prev => {
+                      const updated = { ...(prev[viewingBus.id] || {}) };
+                      delete updated.permit;
+                      return { ...prev, [viewingBus.id]: updated };
+                    });
+                  } : undefined}
+                />
+              </div>
             </div>
           )}
         </Modal>

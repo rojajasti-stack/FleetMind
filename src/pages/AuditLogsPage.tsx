@@ -3,7 +3,7 @@ import {
   ShieldCheck, Search, Filter, Download, Calendar, User, Clock
 } from 'lucide-react';
 import { useFleetData } from '../hooks/useFleetData';
-import { formatDateTime } from '../../src/utils/formatters';
+import { formatDateTime } from '../utils/formatters';
 import { exportToCsv } from '../utils/exportCsv';
 
 export const AuditLogsPage: React.FC = () => {

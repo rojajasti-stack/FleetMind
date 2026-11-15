@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import {
   Users, Search, Plus, Download, Edit2, Trash2, Eye, ShieldCheck,
-  Phone, Mail, Calendar, Bus, Award, AlertCircle
+  Lock, Bus, Award, Calendar, AlertCircle
 } from 'lucide-react';
 import { useFleetData } from '../hooks/useFleetData';
+import { useAuth } from '../context/AuthContext';
 import { Driver, DriverStatus, DriverAvailability } from '../types';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
+import { DocumentUploader, StoredDocument } from '../components/common/DocumentUploader';
 import { formatDate, formatDistance } from '../utils/formatters';
 import { exportToCsv } from '../utils/exportCsv';
 
@@ -19,11 +21,33 @@ export const DriversPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
 
+  const { isAdmin, isSuperAdmin, isGuest, hasRole } = useAuth();
+  const canUploadDriverDocs = isSuperAdmin || isAdmin || hasRole(['Fleet Manager', 'Admin', 'Super Admin']);
+  const canDeleteDriverDocs = isSuperAdmin || isAdmin;
+
   // Modals
   const [isAddEditOpen, setIsAddEditOpen] = useState(false);
   const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
   const [viewingDriver, setViewingDriver] = useState<Driver | null>(null);
   const [deletingDriverId, setDeletingDriverId] = useState<string | null>(null);
+
+  // Driver Confidential Documents
+  const [driverDocuments, setDriverDocuments] = useState<Record<string, Record<string, StoredDocument>>>({
+    'd1': {
+      license: {
+        name: 'Heavy_Commercial_Badge_DL9812.pdf',
+        path: '00000000-0000-0000-0000-000000000001/drivers/d1/license_DL9812.pdf',
+        size: 1540000,
+        uploadedAt: '2026-01-20'
+      },
+      medical: {
+        name: 'Medical_Vision_Clearance_2026.pdf',
+        path: '00000000-0000-0000-0000-000000000001/drivers/d1/medical_fitness.pdf',
+        size: 890000,
+        uploadedAt: '2026-01-22'
+      }
+    }
+  });
 
   // Form State
   const initialFormState: Omit<Driver, 'id'> = {
@@ -164,11 +188,10 @@ export const DriversPage: React.FC = () => {
             <button
               key={av}
               onClick={() => setAvailabilityFilter(av)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize whitespace-nowrap transition-all ${
-                availabilityFilter === av
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize whitespace-nowrap transition-all ${availabilityFilter === av
                   ? 'bg-[#00C2FF] text-slate-950 shadow-sm'
                   : 'text-slate-400 hover:text-white'
-              }`}
+                }`}
             >
               {av.replace('_', ' ')}
             </button>
@@ -479,6 +502,95 @@ export const DriversPage: React.FC = () => {
                 <span className="text-white">{viewingDriver.emergency_contact || 'None registered'}</span>
               </div>
             </div>
+
+            {/* CONFIDENTIAL DRIVER PII DOCUMENTS (RLS RESTRICTED) */}
+            {isGuest ? (
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-start gap-2.5">
+                <Lock className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                <div>
+                  <p className="font-bold">Confidential Driver Documents Restricted</p>
+                  <p className="text-[11px] text-amber-200/80 mt-0.5">
+                    PostgreSQL Row Level Security blocks Guest accounts from viewing sensitive driver PII and identity documents.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 pt-2 border-t border-white/5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-slate-300 font-heading uppercase tracking-wider flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-[#00C2FF]" />
+                    Confidential Driver Vault (PII)
+                  </h4>
+                  <span className="font-mono text-[10px] text-slate-400 bg-black/20 px-2 py-0.5 rounded">bucket: driver-documents</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <DocumentUploader
+                    bucket="driver-documents"
+                    entityId={viewingDriver.id}
+                    category="driving_license"
+                    label="Commercial Heavy Driving License"
+                    description="Front & back scanned copy of commercial driving badge."
+                    currentDocument={driverDocuments[viewingDriver.id]?.license || null}
+                    readOnly={!canUploadDriverDocs}
+                    onUploadSuccess={(res) => {
+                      setDriverDocuments(prev => ({
+                        ...prev,
+                        [viewingDriver.id]: {
+                          ...(prev[viewingDriver.id] || {}),
+                          license: {
+                            name: res.path.split('/').pop() || 'Driver_License.pdf',
+                            path: res.path,
+                            url: res.signedUrl,
+                            size: res.fileSize,
+                            uploadedAt: new Date().toISOString()
+                          }
+                        }
+                      }));
+                    }}
+                    onRemoveDocument={canDeleteDriverDocs ? () => {
+                      setDriverDocuments(prev => {
+                        const updated = { ...(prev[viewingDriver.id] || {}) };
+                        delete updated.license;
+                        return { ...prev, [viewingDriver.id]: updated };
+                      });
+                    } : undefined}
+                  />
+
+                  <DocumentUploader
+                    bucket="driver-documents"
+                    entityId={viewingDriver.id}
+                    category="medical_fitness"
+                    label="Medical Fitness & Vision Certificate"
+                    description="Cardiovascular and optical clearance certificate."
+                    currentDocument={driverDocuments[viewingDriver.id]?.medical || null}
+                    readOnly={!canUploadDriverDocs}
+                    onUploadSuccess={(res) => {
+                      setDriverDocuments(prev => ({
+                        ...prev,
+                        [viewingDriver.id]: {
+                          ...(prev[viewingDriver.id] || {}),
+                          medical: {
+                            name: res.path.split('/').pop() || 'Medical_Fitness.pdf',
+                            path: res.path,
+                            url: res.signedUrl,
+                            size: res.fileSize,
+                            uploadedAt: new Date().toISOString()
+                          }
+                        }
+                      }));
+                    }}
+                    onRemoveDocument={canDeleteDriverDocs ? () => {
+                      setDriverDocuments(prev => {
+                        const updated = { ...(prev[viewingDriver.id] || {}) };
+                        delete updated.medical;
+                        return { ...prev, [viewingDriver.id]: updated };
+                      });
+                    } : undefined}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}

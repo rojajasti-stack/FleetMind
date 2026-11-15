@@ -1,0 +1,65 @@
+name: Supabase Scheduled Disaster Recovery Backup
+
+on:
+  schedule:
+    # Runs daily at 02:00 UTC (07:30 IST)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      backup_type:
+        description: 'Backup scope'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - database_only
+          - storage_only
+
+jobs:
+  backup:
+    name: Execute Encrypted Backup & Integrity Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Database Backup & Encryption
+        if: ${{ github.event.inputs.backup_type != 'storage_only' }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          BACKUP_DIR: ${{ github.workspace }}/backups/database
+        run: |
+          node scripts/backup/db_backup.cjs
+
+      - name: Run Storage Buckets Backup
+        if: ${{ github.event.inputs.backup_type != 'database_only' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STORAGE_BACKUP_DIR: ${{ github.workspace }}/backups/storage
+        run: |
+          node scripts/backup/storage_backup.cjs
+
+      - name: Store Encrypted Artifacts (Private GitHub Retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleetmind-encrypted-backup-${{ github.run_id }}
+          path: |
+            backups/database/*.enc
+            backups/database/*_manifest.json
+            backups/database/backup_history.log
+            backups/storage/**/manifest.json
+            backups/storage/storage_backup_history.log
+          retention-days: 14
+          if-no-files-found: error

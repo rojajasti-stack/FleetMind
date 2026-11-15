@@ -1,16 +1,20 @@
 import React, { useState } from 'react';
 import {
-  Fuel, Search, Plus, Download, Edit2, Trash2, Gauge,
-  TrendingDown, TrendingUp, AlertTriangle, CheckCircle, MapPin
+  Fuel, Search, Plus, Download, Trash2,
+  TrendingDown, TrendingUp, AlertTriangle, MapPin,
+  Receipt, Lock, Gauge
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
 } from 'recharts';
 import { useFleetData } from '../hooks/useFleetData';
+import { useAuth } from '../context/AuthContext';
 import { FuelRecord } from '../types';
 import { StatCard } from '../components/common/StatCard';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
+import { DocumentUploader, StoredDocument } from '../components/common/DocumentUploader';
+import { getSignedDocumentUrl } from '../services/storage';
 import { formatCurrency, formatDate } from '../utils/formatters';
 import { exportToCsv } from '../utils/exportCsv';
 
@@ -18,9 +22,21 @@ export const FuelPage: React.FC = () => {
   const { fuelRecords, addFuelRecord, deleteFuelRecord, buses, drivers } = useFleetData();
 
   const [search, setSearch] = useState('');
+  const { canAccessFinance, isGuest, isSuperAdmin, isAdmin } = useAuth();
   const [selectedBusFilter, setSelectedBusFilter] = useState('all');
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [deletingFuelId, setDeletingFuelId] = useState<string | null>(null);
+
+  // Storage State for Receipts
+  const [uploadedReceiptDoc, setUploadedReceiptDoc] = useState<StoredDocument | null>(null);
+  const [receiptDocuments, setReceiptDocuments] = useState<Record<string, StoredDocument>>({
+    'fl-1': {
+      name: 'IOC_Dispensing_Slip_88219.pdf',
+      path: '00000000-0000-0000-0000-000000000001/receipts/fuel/fl_1_receipt.pdf',
+      size: 450000,
+      uploadedAt: '2026-03-01'
+    }
+  });
 
   // Form State
   const initialFormState: Omit<FuelRecord, 'id'> = {
@@ -80,6 +96,13 @@ export const FuelPage: React.FC = () => {
   const handleSubmitForm = (e: React.FormEvent) => {
     e.preventDefault();
     addFuelRecord(formData);
+    if (uploadedReceiptDoc) {
+      setReceiptDocuments(prev => ({
+        ...prev,
+        [formData.receipt_number || Date.now().toString()]: uploadedReceiptDoc
+      }));
+      setUploadedReceiptDoc(null);
+    }
     setIsAddOpen(false);
   };
 
@@ -241,6 +264,7 @@ export const FuelPage: React.FC = () => {
             <tbody className="divide-y divide-white/5">
               {filteredFuel.map((record) => {
                 const isAnomaly = record.calculated_efficiency && record.calculated_efficiency < 4.4;
+                const receiptDoc = receiptDocuments[record.receipt_number || ''] || receiptDocuments[record.id];
 
                 return (
                   <tr key={record.id} className="hover:bg-white/5 transition-colors">
@@ -277,13 +301,33 @@ export const FuelPage: React.FC = () => {
                       )}
                     </td>
                     <td className="px-5 py-4 text-right">
-                      <button
-                        onClick={() => setDeletingFuelId(record.id)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-                        title="Delete Entry"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        {receiptDoc ? (
+                          canAccessFinance ? (
+                            <button
+                              onClick={async () => {
+                                const url = receiptDoc.url || await getSignedDocumentUrl('receipts', receiptDoc.path, 3600);
+                                if (url) window.open(url, '_blank', 'noopener,noreferrer');
+                              }}
+                              className="p-1.5 rounded-lg text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                              title="View Dispensing Slip (Signed URL)"
+                            >
+                              <Receipt className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <span title="Receipt protected by Finance RLS" className="p-1.5 text-slate-600">
+                              <Lock className="w-4 h-4" />
+                            </span>
+                          )
+                        ) : null}
+                        <button
+                          onClick={() => setDeletingFuelId(record.id)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                          title="Delete Entry"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -404,6 +448,28 @@ export const FuelPage: React.FC = () => {
                 className="w-full bg-[#08111F] border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#00C2FF]/50"
               />
             </div>
+          </div>
+
+          <div className="pt-2">
+            <DocumentUploader
+              bucket="receipts"
+              entityId={formData.receipt_number || 'fuel_bill'}
+              category="fuel"
+              label="Dispensing Slip / Cash Receipt (Optional)"
+              description="Digitize fuel invoice (PDF or Image up to 10MB)"
+              currentDocument={uploadedReceiptDoc}
+              onUploadSuccess={(res) => {
+                setUploadedReceiptDoc({
+                  name: res.path.split('/').pop() || 'Fuel_Receipt.pdf',
+                  path: res.path,
+                  url: res.signedUrl,
+                  size: res.fileSize,
+                  uploadedAt: new Date().toISOString()
+                });
+              }}
+              onRemoveDocument={() => setUploadedReceiptDoc(null)}
+              compact
+            />
           </div>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/5">

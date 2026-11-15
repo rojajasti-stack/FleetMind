@@ -8,6 +8,7 @@ import {
   RotateCcw, CheckCheck, ExternalLink
 } from 'lucide-react';
 import { useFleetData } from '../../hooks/useFleetData';
+import { useAuth } from '../../context/AuthContext';
 import { formatDateTime } from '../../utils/formatters';
 
 interface NavItem {
@@ -32,7 +33,9 @@ export const AppLayout: React.FC = () => {
 
   const location = useLocation();
   const navigate = useNavigate();
-  const { notifications, markAllNotificationsAsRead, profile, resetToDemo, buses, drivers, routes } = useFleetData();
+  const { notifications, markAllNotificationsAsRead, profile: storeProfile, resetToDemo, buses, drivers, routes } = useFleetData();
+  const { signOut, profile: authProfile } = useAuth();
+  const profile = authProfile || storeProfile;
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -41,6 +44,23 @@ export const AppLayout: React.FC = () => {
     month: 'short',
     day: 'numeric',
   });
+
+  const userRole = profile.role || 'Guest';
+  const isSuperAdmin = userRole === 'Super Admin';
+  const isAdmin = isSuperAdmin || userRole === 'Admin';
+  const canAccessFinance = isSuperAdmin || ['Admin', 'Fleet Manager', 'Accountant'].includes(userRole);
+  const canAccessAuditLogs = isSuperAdmin || ['Admin', 'Fleet Manager'].includes(userRole);
+  const canAccessSettings = isSuperAdmin || userRole === 'Admin';
+
+  const roleBadgeColor = {
+    'Super Admin': 'bg-purple-500/20 text-purple-300 border-purple-500/40',
+    'Admin': 'bg-blue-500/20 text-blue-300 border-blue-500/40',
+    'Fleet Manager': 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+    'Dispatcher': 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
+    'Accountant': 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    'Normal User': 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',
+    'Guest': 'bg-slate-500/20 text-slate-300 border-slate-500/40',
+  }[userRole] || 'bg-slate-500/20 text-slate-300 border-slate-500/40';
 
   const navigationSections: NavSection[] = [
     {
@@ -69,32 +89,36 @@ export const AppLayout: React.FC = () => {
         { label: 'Inventory', icon: Package, path: '/inventory' },
       ],
     },
-    {
-      label: 'Finance',
-      items: [
-        { label: 'Finance', icon: Wallet, path: '/finance' },
-        { label: 'EMI', icon: CreditCard, path: '/emi' },
-      ],
-    },
+    ...(canAccessFinance
+      ? [
+          {
+            label: 'Finance',
+            items: [
+              { label: 'Finance', icon: Wallet, path: '/finance' },
+              { label: 'EMI', icon: CreditCard, path: '/emi' },
+            ],
+          },
+        ]
+      : []),
     {
       label: 'Insights',
       items: [
         { label: 'Reports', icon: BarChart3, path: '/reports' },
-        { label: 'Audit Logs', icon: ShieldCheck, path: '/audit-logs' },
+        ...(canAccessAuditLogs ? [{ label: 'Audit Logs', icon: ShieldCheck, path: '/audit-logs' }] : []),
       ],
     },
     {
       label: 'Account',
       items: [
         { label: 'Notifications', icon: Bell, path: '/notifications', badge: unreadCount },
-        { label: 'Settings', icon: Settings, path: '/settings' },
+        ...(canAccessSettings ? [{ label: 'Settings', icon: Settings, path: '/settings' }] : []),
         { label: 'Profile', icon: User, path: '/profile' },
       ],
     },
   ];
 
-  const handleLogout = () => {
-    localStorage.removeItem('fleetmind_auth_token');
+  const handleLogout = async () => {
+    await signOut();
     navigate('/login');
   };
 
@@ -409,6 +433,9 @@ export const AppLayout: React.FC = () => {
                 <span className="text-xs font-semibold text-white hidden sm:inline-block max-w-[120px] truncate">
                   {profile.full_name.split(' ')[0]}
                 </span>
+                <span className={`hidden md:inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${roleBadgeColor}`}>
+                  {userRole}
+                </span>
               </button>
 
               {profileDropdownOpen && (
@@ -416,6 +443,11 @@ export const AppLayout: React.FC = () => {
                   <div className="px-4 py-3">
                     <p className="text-xs font-bold text-white truncate">{profile.full_name}</p>
                     <p className="text-[11px] text-slate-400 truncate mt-0.5">{profile.email}</p>
+                    <div className="mt-2">
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${roleBadgeColor}`}>
+                        {userRole}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="py-1">
@@ -451,6 +483,14 @@ export const AppLayout: React.FC = () => {
             </div>
           </div>
         </header>
+
+        {/* Guest Read-Only Warning Banner */}
+        {userRole === 'Guest' && (
+          <div className="bg-amber-500/10 border-b border-amber-500/25 px-4 py-2 text-center text-xs text-amber-300 flex items-center justify-center gap-2">
+            <span className="font-semibold">🛡️ Guest Preview Mode:</span>
+            <span>You have read-only access to basic fleet overviews. Administrative and operational mutations are disabled.</span>
+          </div>
+        )}
 
         {/* PAGE CONTENT OUTLET */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">

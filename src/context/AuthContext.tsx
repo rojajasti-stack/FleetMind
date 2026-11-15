@@ -1,0 +1,588 @@
+/**
+ * Supabase Authentication Context & Hook
+ *
+ * Provides comprehensive session management, email/password auth, Google OAuth,
+ * password recovery, MFA support, rate limiting, and graceful offline fallback.
+ */
+
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import type { User, Session, AuthError, Factor } from '@supabase/supabase-js';
+import { supabase, isSupabaseConfigured } from '../services/supabase';
+import { fleetStore } from '../services/store';
+import { rateLimiter } from '../utils/rateLimiter';
+import type { UserProfile } from '../types';
+
+export interface AuthContextType {
+  user: User | null;
+  session: Session | null;
+  profile: UserProfile | null;
+  loading: boolean;
+  isAuthenticated: boolean;
+  isSupabaseConfigured: boolean;
+  authMode: 'supabase' | 'demo';
+  
+  // Auth Operations
+  signInWithEmail: (email: string, password: string, captchaToken?: string) => Promise<{ error: string | null }>;
+  signUpWithEmail: (
+    email: string,
+    password: string,
+    metadata: { fullName: string; companyName?: string; role?: UserProfile['role'] },
+    captchaToken?: string
+  ) => Promise<{ error: string | null; needsEmailVerification?: boolean }>;
+  signInWithGoogle: () => Promise<{ error: string | null }>;
+  signOut: () => Promise<void>;
+  sendPasswordResetEmail: (email: string, captchaToken?: string) => Promise<{ error: string | null }>;
+  updatePassword: (newPassword: string) => Promise<{ error: string | null }>;
+  
+  // Profile & MFA
+  refreshProfile: () => Promise<void>;
+  updateUserProfile: (data: Partial<UserProfile>) => Promise<{ error: string | null }>;
+  enrollMfaTotp: () => Promise<{ factorId?: string; qrCode?: string; secret?: string; error: string | null }>;
+  verifyMfaTotp: (factorId: string, code: string) => Promise<{ error: string | null }>;
+  unenrollMfaTotp: (factorId: string) => Promise<{ error: string | null }>;
+  getMfaFactors: () => Promise<{ all: Factor[]; totp: Factor[] }>;
+  
+  // Role-Based Authorization
+  isSuperAdmin: boolean;
+  isAdmin: boolean;
+  isNormalUser: boolean;
+  isGuest: boolean;
+  canAccessFinance: boolean;
+  hasRole: (allowedRoles: string[]) => boolean;
+  changeUserRole: (targetUserId: string, newRole: string) => Promise<{ success: boolean; error: string | null }>;
+
+  // Demo Mode Switch
+  loginAsDemo: () => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [demoLoggedIn, setDemoLoggedIn] = useState<boolean>(() => {
+    return localStorage.getItem('fleetmind_auth_token') === 'demo_session_active';
+  });
+
+  const authMode: 'supabase' | 'demo' = isSupabaseConfigured && !demoLoggedIn ? 'supabase' : 'demo';
+
+  // Load profile from Supabase or fallback to local store
+  const loadProfile = useCallback(async (userId?: string, userEmail?: string) => {
+    if (isSupabaseConfigured && supabase && userId) {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (data && !error) {
+          const loaded: UserProfile = {
+            id: data.id,
+            full_name: data.full_name,
+            email: data.email,
+            phone: data.phone || '',
+            job_title: data.job_title || 'Fleet Operator',
+            company_name: data.company_name || 'FleetMind Logistics',
+            avatar_url: data.avatar_url || undefined,
+            role: (data.role as UserProfile['role']) || 'Fleet Manager'
+          };
+          setProfile(loaded);
+          return;
+        }
+      } catch {
+        // Fall back gracefully
+      }
+    }
+
+    // Default profile from local store
+    setProfile({
+      ...fleetStore.profile,
+      email: userEmail || fleetStore.profile.email
+    });
+  }, []);
+
+  // Initialize Session
+  useEffect(() => {
+    let mounted = true;
+
+    async function initializeAuth() {
+      if (isSupabaseConfigured && supabase) {
+        try {
+          const { data: { session: initialSession }, error } = await supabase.auth.getSession();
+          if (error) {
+            console.warn('[Auth] Session retrieval warning:', error.message);
+          }
+
+          if (mounted) {
+            if (initialSession?.user) {
+              setSession(initialSession);
+              setUser(initialSession.user);
+              await loadProfile(initialSession.user.id, initialSession.user.email);
+            } else if (demoLoggedIn) {
+              // Running in local demo mode
+              setProfile(fleetStore.profile);
+            }
+          }
+        } catch (err) {
+          console.warn('[Auth] Initialization error:', err);
+        }
+      } else {
+        // Offline / unconfigured mode
+        if (demoLoggedIn) {
+          setProfile(fleetStore.profile);
+        }
+      }
+
+      if (mounted) {
+        setLoading(false);
+      }
+    }
+
+    initializeAuth();
+
+    // Listen to Supabase Auth state changes
+    let authListener: { unsubscribe: () => void } | null = null;
+    if (isSupabaseConfigured && supabase) {
+      const { data } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+        if (!mounted) return;
+
+        setSession(currentSession);
+        setUser(currentSession?.user ?? null);
+
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          if (currentSession?.user) {
+            await loadProfile(currentSession.user.id, currentSession.user.email);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          setProfile(null);
+          setDemoLoggedIn(false);
+          localStorage.removeItem('fleetmind_auth_token');
+        }
+      });
+      authListener = data.subscription;
+    }
+
+    return () => {
+      mounted = false;
+      if (authListener) {
+        authListener.unsubscribe();
+      }
+    };
+  }, [loadProfile, demoLoggedIn]);
+
+  // 1. Email / Password Sign In
+  const signInWithEmail = async (email: string, password: string, captchaToken?: string) => {
+    // Check rate limit
+    const rateCheck = rateLimiter.check();
+    if (!rateCheck.allowed) {
+      return {
+        error: `Too many login attempts. Please wait ${rateCheck.remainingSeconds} seconds before trying again.`
+      };
+    }
+
+    if (!isSupabaseConfigured || !supabase) {
+      // Offline fallback mode
+      if (email && password) {
+        rateLimiter.reset();
+        localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
+        setDemoLoggedIn(true);
+        setProfile(fleetStore.profile);
+        return { error: null };
+      }
+      rateLimiter.recordFailure();
+      return { error: 'Please enter a valid email and password.' };
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+        options: captchaToken ? { captchaToken } : undefined
+      });
+
+      if (error) {
+        const failure = rateLimiter.recordFailure();
+        if (failure.lockedOut) {
+          return { error: `Too many failed attempts. Account locked for ${failure.remainingSeconds}s.` };
+        }
+        return { error: error.message };
+      }
+
+      rateLimiter.reset();
+      setUser(data.user);
+      setSession(data.session);
+      await loadProfile(data.user.id, data.user.email);
+      return { error: null };
+    } catch (err: unknown) {
+      rateLimiter.recordFailure();
+      const message = err instanceof Error ? err.message : 'Authentication failed';
+      return { error: message };
+    }
+  };
+
+  // 2. User Registration
+  const signUpWithEmail = async (
+    email: string,
+    password: string,
+    metadata: { fullName: string; companyName?: string; role?: UserProfile['role'] },
+    captchaToken?: string
+  ) => {
+    if (!isSupabaseConfigured || !supabase) {
+      // Offline fallback mode
+      localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
+      setDemoLoggedIn(true);
+      setProfile({
+        ...fleetStore.profile,
+        full_name: metadata.fullName,
+        company_name: metadata.companyName || fleetStore.profile.company_name,
+        email
+      });
+      return { error: null, needsEmailVerification: false };
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: metadata.fullName,
+            company_name: metadata.companyName || 'Fleet Operations',
+            role: metadata.role || 'Fleet Manager'
+          },
+          emailRedirectTo: `${window.location.origin}/`,
+          ...(captchaToken ? { captchaToken } : {})
+        }
+      });
+
+      if (error) {
+        return { error: error.message };
+      }
+
+      // If Supabase has email confirmation enabled, session will be null
+      const needsEmailVerification = !data.session;
+
+      if (data.session && data.user) {
+        setUser(data.user);
+        setSession(data.session);
+        await loadProfile(data.user.id, data.user.email);
+      }
+
+      return { error: null, needsEmailVerification };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Registration failed';
+      return { error: message };
+    }
+  };
+
+  // 3. Google Sign In
+  const signInWithGoogle = async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      // In demo mode, simulate successful login
+      localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
+      setDemoLoggedIn(true);
+      setProfile(fleetStore.profile);
+      return { error: null };
+    }
+
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/`
+        }
+      });
+      if (error) return { error: error.message };
+      return { error: null };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Google sign-in failed';
+      return { error: message };
+    }
+  };
+
+  // 4. Sign Out
+  const signOut = async () => {
+    rateLimiter.reset();
+    localStorage.removeItem('fleetmind_auth_token');
+    setDemoLoggedIn(false);
+    setUser(null);
+    setSession(null);
+    setProfile(null);
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (err) {
+        console.warn('[Auth] Signout error:', err);
+      }
+    }
+  };
+
+  // 5. Password Reset Request
+  const sendPasswordResetEmail = async (email: string, captchaToken?: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      // Demo simulated success
+      return { error: null };
+    }
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/reset-password`,
+        ...(captchaToken ? { captchaToken } : {})
+      });
+      if (error) return { error: error.message };
+      return { error: null };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Password reset request failed';
+      return { error: message };
+    }
+  };
+
+  // 6. Update Password
+  const updatePassword = async (newPassword: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { error: null };
+    }
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword
+      });
+      if (error) return { error: error.message };
+      return { error: null };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Password update failed';
+      return { error: message };
+    }
+  };
+
+  // 7. Update User Profile
+  const updateUserProfile = async (data: Partial<UserProfile>) => {
+    if (isSupabaseConfigured && supabase && user) {
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            full_name: data.full_name,
+            phone: data.phone,
+            job_title: data.job_title,
+            company_name: data.company_name,
+            avatar_url: data.avatar_url,
+            role: data.role,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', user.id);
+
+        if (error) return { error: error.message };
+        await loadProfile(user.id, user.email);
+        return { error: null };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Profile update failed';
+        return { error: message };
+      }
+    }
+
+    // Demo store fallback
+    fleetStore.updateProfile(data);
+    setProfile(prev => prev ? { ...prev, ...data } : null);
+    return { error: null };
+  };
+
+  // 8. Multi-Factor Authentication (TOTP)
+  const enrollMfaTotp = async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { error: 'MFA requires an active Supabase cloud connection.' };
+    }
+
+    try {
+      const { data, error } = await supabase.auth.mfa.enroll({
+        factorType: 'totp',
+        issuer: 'FleetMind AI'
+      });
+
+      if (error) return { error: error.message };
+      return {
+        factorId: data.id,
+        qrCode: data.totp.qr_code,
+        secret: data.totp.secret,
+        error: null
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'MFA enrollment failed';
+      return { error: message };
+    }
+  };
+
+  const verifyMfaTotp = async (factorId: string, code: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { error: 'MFA requires an active Supabase cloud connection.' };
+    }
+
+    try {
+      const challenge = await supabase.auth.mfa.challenge({ factorId });
+      if (challenge.error) return { error: challenge.error.message };
+
+      const verify = await supabase.auth.mfa.verify({
+        factorId,
+        challengeId: challenge.data.id,
+        code
+      });
+
+      if (verify.error) return { error: verify.error.message };
+      return { error: null };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'MFA verification failed';
+      return { error: message };
+    }
+  };
+
+  const unenrollMfaTotp = async (factorId: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { error: 'MFA requires an active Supabase cloud connection.' };
+    }
+
+    try {
+      const { error } = await supabase.auth.mfa.unenroll({ factorId });
+      if (error) return { error: error.message };
+      return { error: null };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'MFA removal failed';
+      return { error: message };
+    }
+  };
+
+  const getMfaFactors = async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { all: [], totp: [] };
+    }
+
+    try {
+      const { data, error } = await supabase.auth.mfa.listFactors();
+      if (error || !data) return { all: [], totp: [] };
+      return {
+        all: data.all,
+        totp: data.totp
+      };
+    } catch {
+      return { all: [], totp: [] };
+    }
+  };
+
+  // Demo Login Quick Action
+  const loginAsDemo = () => {
+    localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
+    setDemoLoggedIn(true);
+    setProfile(fleetStore.profile);
+  };
+
+  const refreshProfile = useCallback(async () => {
+    if (user) {
+      await loadProfile(user.id, user.email);
+    }
+  }, [user, loadProfile]);
+
+  const isAuthenticated = useMemo(() => {
+    return Boolean(session?.user || demoLoggedIn);
+  }, [session, demoLoggedIn]);
+
+  const userRole = profile?.role || 'Guest';
+  const isSuperAdmin = userRole === 'Super Admin';
+  const isAdmin = userRole === 'Admin' || isSuperAdmin;
+  const isNormalUser = userRole === 'Normal User' || userRole === 'Dispatcher';
+  const isGuest = userRole === 'Guest';
+  const canAccessFinance = ['Super Admin', 'Admin', 'Fleet Manager', 'Accountant'].includes(userRole);
+
+  const hasRole = useCallback((allowedRoles: string[]) => {
+    if (isSuperAdmin) return true;
+    return allowedRoles.includes(userRole);
+  }, [isSuperAdmin, userRole]);
+
+  const changeUserRole = useCallback(async (targetUserId: string, newRole: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      if (profile && profile.id === targetUserId) {
+        setProfile({ ...profile, role: newRole as UserProfile['role'] });
+      }
+      return { success: true, error: null };
+    }
+
+    try {
+      const { data, error } = await (supabase.rpc as any)('manage_user_role', {
+        p_target_user_id: targetUserId,
+        p_new_role: newRole
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (user && user.id === targetUserId) {
+        await refreshProfile();
+      }
+
+      return { success: true, error: null };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to update user role' };
+    }
+  }, [profile, user, refreshProfile]);
+
+  const value = useMemo(
+    () => ({
+      user,
+      session,
+      profile,
+      loading,
+      isAuthenticated,
+      isSupabaseConfigured,
+      authMode,
+      isSuperAdmin,
+      isAdmin,
+      isNormalUser,
+      isGuest,
+      canAccessFinance,
+      hasRole,
+      changeUserRole,
+      signInWithEmail,
+      signUpWithEmail,
+      signInWithGoogle,
+      signOut,
+      sendPasswordResetEmail,
+      updatePassword,
+      refreshProfile,
+      updateUserProfile,
+      enrollMfaTotp,
+      verifyMfaTotp,
+      unenrollMfaTotp,
+      getMfaFactors,
+      loginAsDemo
+    }),
+    [
+      user,
+      session,
+      profile,
+      loading,
+      isAuthenticated,
+      authMode,
+      isSuperAdmin,
+      isAdmin,
+      isNormalUser,
+      isGuest,
+      canAccessFinance,
+      hasRole,
+      changeUserRole,
+      refreshProfile
+    ]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+export function useAuth(): AuthContextType {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}

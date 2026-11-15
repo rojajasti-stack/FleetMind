@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import {
   CreditCard, Search, Plus, Download, CheckCircle, Clock,
-  AlertTriangle, DollarSign, Calendar, Building2, Bus
+  AlertTriangle, DollarSign, Calendar, Building2, Bus, ShieldCheck, Loader2
 } from 'lucide-react';
 import { useFleetData } from '../hooks/useFleetData';
 import { EmiLoan } from '../types';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { Modal } from '../components/common/Modal';
+import { invokeRecordEmiPayment } from '../services/edgeFunctions';
 import { formatCurrency, formatDate, calculateEmi } from '../utils/formatters';
 import { exportToCsv } from '../utils/exportCsv';
 
@@ -22,6 +23,8 @@ export const EmiPage: React.FC = () => {
   const [paymentLoan, setPaymentLoan] = useState<EmiLoan | null>(null);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [paymentAmount, setPaymentAmount] = useState(0);
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   // Form State
   const initialFormState: Omit<EmiLoan, 'id'> = {
@@ -72,15 +75,41 @@ export const EmiPage: React.FC = () => {
     setPaymentLoan(loan);
     setPaymentAmount(loan.monthly_emi);
     setPaymentDate(new Date().toISOString().split('T')[0]);
+    setPaymentError(null);
     setIsPaymentModalOpen(true);
   };
 
-  const handleSubmitPayment = (e: React.FormEvent) => {
+  const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!paymentLoan) return;
 
-    recordEmiPayment(paymentLoan.id, paymentAmount, paymentDate);
-    setIsPaymentModalOpen(false);
+    setIsSubmittingPayment(true);
+    setPaymentError(null);
+
+    try {
+      // Execute trusted server-side Edge Function
+      const res = await invokeRecordEmiPayment({
+        loanId: paymentLoan.id,
+        amount: paymentAmount,
+        paymentDate,
+        paymentMethod: 'Bank Transfer',
+        reference: `EMI-SETTLEMENT-${Date.now()}`
+      });
+
+      if (!res.success) {
+        setPaymentError(res.error || 'Server rejected payment settlement.');
+        setIsSubmittingPayment(false);
+        return;
+      }
+
+      // Update client store
+      recordEmiPayment(paymentLoan.id, paymentAmount, paymentDate);
+      setIsPaymentModalOpen(false);
+    } catch (err) {
+      setPaymentError(err instanceof Error ? err.message : 'Error executing payment');
+    } finally {
+      setIsSubmittingPayment(false);
+    }
   };
 
   const handleSubmitNewLoan = (e: React.FormEvent) => {
@@ -303,8 +332,23 @@ export const EmiPage: React.FC = () => {
             </div>
           </div>
 
+          {paymentError && (
+            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{paymentError}</span>
+            </div>
+          )}
+
+          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Protected Server-Side Amortization Ledger</span>
+            </span>
+            <span className="font-mono text-[10px] text-slate-400">edge: emi-calculate-and-pay</span>
+          </div>
+
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            Recording this instalment will update remaining principal balances and automatically post a corresponding expense in the Finance module ledger.
+            Recording this instalment will update remaining principal balances and automatically post a verified double-entry expense in the Finance module ledger.
           </p>
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/5">
@@ -317,9 +361,17 @@ export const EmiPage: React.FC = () => {
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#00C2FF] hover:bg-[#00C2FF]/90 text-slate-950 transition-colors shadow-lg"
+              disabled={isSubmittingPayment}
+              className="px-5 py-2.5 rounded-xl text-xs font-bold bg-[#00C2FF] hover:bg-[#00C2FF]/90 text-slate-950 transition-colors shadow-lg flex items-center gap-2 disabled:opacity-60"
             >
-              Confirm Bank Settlement
+              {isSubmittingPayment ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Processing Settlement...</span>
+                </>
+              ) : (
+                <span>Confirm Bank Settlement</span>
+              )}
             </button>
           </div>
         </form>

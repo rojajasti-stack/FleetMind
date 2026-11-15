@@ -240,6 +240,15 @@ export interface AuditLog {
   details: string;
 }
 
+export type UserRole = 
+  | 'Super Admin' 
+  | 'Admin' 
+  | 'Normal User' 
+  | 'Guest' 
+  | 'Fleet Manager' 
+  | 'Dispatcher' 
+  | 'Accountant';
+
 export interface UserProfile {
   id: string;
   full_name: string;
@@ -248,7 +257,8 @@ export interface UserProfile {
   job_title: string;
   company_name: string;
   avatar_url?: string;
-  role: 'Fleet Manager' | 'Admin' | 'Dispatcher' | 'Accountant';
+  role: UserRole;
+  organization_id?: string;
 }
 
 export interface SystemSettings {
