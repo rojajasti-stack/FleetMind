@@ -34,7 +34,7 @@ export const AppLayout: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { notifications, markAllNotificationsAsRead, profile: storeProfile, resetToDemo, buses, drivers, routes } = useFleetData();
-  const { signOut, profile: authProfile } = useAuth();
+  const { signOut, profile: authProfile, user, authMode } = useAuth();
   const profile = authProfile || storeProfile;
 
   const unreadCount = notifications.filter(n => !n.read).length;
@@ -207,11 +207,17 @@ export const AppLayout: React.FC = () => {
         {/* Sidebar Footer User Info */}
         <div className="p-3 border-t border-white/5 shrink-0 bg-[#08111F]/50">
           <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'}`}>
-            <img
-              src={profile.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'}
-              alt={profile.full_name}
-              className="w-8 h-8 rounded-full object-cover ring-2 ring-[#00C2FF]/30 shrink-0"
-            />
+            {profile.avatar_url ? (
+              <img
+                src={profile.avatar_url}
+                alt={profile.full_name}
+                className="w-8 h-8 rounded-full object-cover ring-2 ring-[#00C2FF]/30 shrink-0"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-[#00C2FF] flex items-center justify-center text-white text-xs font-bold ring-2 ring-[#00C2FF]/30 shrink-0">
+                {profile.full_name?.charAt(0)?.toUpperCase() || 'U'}
+              </div>
+            )}
             {!isCollapsed && (
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-semibold text-white truncate">{profile.full_name}</p>
@@ -325,21 +331,31 @@ export const AppLayout: React.FC = () => {
 
             {/* Storage & Auth Mode Badge */}
             <div className="flex items-center gap-2">
-              <span
-                title="Fleet operational records are stored in browser localStorage. Cloud database migration pending."
-                className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                Local Storage Mode
-              </span>
+              {authMode === 'supabase' && user ? (
+                <span
+                  title="Connected to Supabase Cloud Database (PostgreSQL). Your changes are isolated to your workspace."
+                  className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Cloud Database Connected
+                </span>
+              ) : (
+                <span
+                  title="Running in local demo mode with simulated data."
+                  className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  Demo Mode
+                </span>
+              )}
 
               <button
                 onClick={() => {
-                  if (confirm('Reset fleet data to initial state?')) {
+                  if (confirm(authMode === 'supabase' && user ? 'Clear all vehicles and records in this workspace?' : 'Reset fleet demo data to default sample state?')) {
                     resetToDemo();
                   }
                 }}
-                title="Reset sample data"
+                title={authMode === 'supabase' && user ? 'Clear workspace fleet records' : 'Reset sample data'}
                 className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition-colors border border-transparent hover:border-white/10"
               >
                 <RotateCcw className="w-4 h-4" />
@@ -428,13 +444,19 @@ export const AppLayout: React.FC = () => {
                 }}
                 className="flex items-center gap-2 p-1.5 rounded-xl hover:bg-white/5 transition-colors border border-transparent hover:border-white/10"
               >
-                <img
-                  src={profile.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'}
-                  alt={profile.full_name}
-                  className="w-7 h-7 rounded-full object-cover ring-2 ring-[#00C2FF]/30"
-                />
+                {profile.avatar_url ? (
+                  <img
+                    src={profile.avatar_url}
+                    alt={profile.full_name}
+                    className="w-7 h-7 rounded-full object-cover ring-2 ring-[#00C2FF]/30"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-blue-600 to-[#00C2FF] flex items-center justify-center text-white text-[11px] font-bold ring-2 ring-[#00C2FF]/30 shrink-0">
+                    {profile.full_name?.charAt(0)?.toUpperCase() || 'U'}
+                  </div>
+                )}
                 <span className="text-xs font-semibold text-white hidden sm:inline-block max-w-[120px] truncate">
-                  {profile.full_name.split(' ')[0]}
+                  {profile.full_name?.split(' ')[0] || 'User'}
                 </span>
                 <span className={`hidden md:inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${roleBadgeColor}`}>
                   {userRole}

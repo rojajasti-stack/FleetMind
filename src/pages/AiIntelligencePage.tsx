@@ -5,6 +5,7 @@ import {
   TrendingDown, TrendingUp, ShieldCheck, Fuel, Wrench, RefreshCw
 } from 'lucide-react';
 import { useFleetData } from '../hooks/useFleetData';
+import { useAuth } from '../context/AuthContext';
 import {
   SUGGESTED_QUESTIONS, generateFleetAiResponse, AiChatMessage
 } from '../services/aiIntelligence';
@@ -12,14 +13,17 @@ import { formatCurrency } from '../utils/formatters';
 
 export const AiIntelligencePage: React.FC = () => {
   const navigate = useNavigate();
-  const { buses, serviceRecords, fuelRecords, expenses } = useFleetData();
+  const { buses, serviceRecords, fuelRecords, expenses, profile: storeProfile } = useFleetData();
+  const { profile: authProfile } = useAuth();
+  const profile = authProfile || storeProfile;
+  const userName = profile?.full_name?.split(' ')[0] || 'Operator';
 
   const [inputQuery, setInputQuery] = useState('');
   const [messages, setMessages] = useState<AiChatMessage[]>([
     {
       id: 'init-1',
       sender: 'assistant',
-      text: `Hello Tejeshwar! I am **FleetMind AI**, your real-time logistics analytics assistant. I continuously evaluate your fleet's GPS telematics, workshop repair queues, fuel efficiency curves, and operating expenditures.\n\nClick on any suggested query below or type your custom operational question to generate immediate data-driven diagnostics.`,
+      text: `Hello ${userName}! I am **FleetMind AI**, your real-time logistics analytics assistant. I continuously evaluate your fleet's GPS telematics, workshop repair queues, fuel efficiency curves, and operating expenditures.\n\nClick on any suggested query below or type your custom operational question to generate immediate data-driven diagnostics.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }
   ]);

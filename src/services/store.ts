@@ -4,8 +4,50 @@ import {
   NotificationItem, AuditLog, UserProfile, SystemSettings
 } from '../types';
 import { calculateEmi } from '../utils/formatters';
+import { supabase, isSupabaseConfigured } from './supabase';
 
-const STORAGE_KEY_PREFIX = 'fleetmind_v1_';
+export function formatNameFromEmail(email: string): string {
+  if (!email) return 'Fleet Manager';
+  const lower = email.toLowerCase().trim();
+  if (lower.startsWith('rojajasti')) return 'Roja Jasti';
+  const local = email.split('@')[0];
+  const cleaned = local.replace(/[._\-+0-9]/g, ' ').trim();
+  if (!cleaned) return 'Fleet Operator';
+  return cleaned
+    .split(/\s+/)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+export function getInitialAuthUser(): { id: string; email?: string; full_name?: string } | null {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const u = parsed?.user || parsed?.currentSession?.user;
+          if (u?.id) {
+            return {
+              id: u.id,
+              email: u.email,
+              full_name: u.user_metadata?.full_name || u.user_metadata?.name
+            };
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore storage parse errors
+  }
+  return null;
+}
+
+const initialAuthOnLoad = getInitialAuthUser();
+let currentStoragePrefix = initialAuthOnLoad
+  ? `fleetmind_user_${initialAuthOnLoad.id}_`
+  : 'fleetmind_demo_';
 
 // Initial pre-seeded mock data
 const INITIAL_BUSES: Bus[] = [
@@ -1108,7 +1150,7 @@ const INITIAL_SETTINGS: SystemSettings = {
 // Generic LocalStorage helper
 function loadFromStorage<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_PREFIX + key);
+    const raw = localStorage.getItem(currentStoragePrefix + key);
     if (!raw) return fallback;
     return JSON.parse(raw);
   } catch {
@@ -1118,7 +1160,7 @@ function loadFromStorage<T>(key: string, fallback: T): T {
 
 function saveToStorage<T>(key: string, data: T): void {
   try {
-    localStorage.setItem(STORAGE_KEY_PREFIX + key, JSON.stringify(data));
+    localStorage.setItem(currentStoragePrefix + key, JSON.stringify(data));
   } catch (err) {
     console.error(`Failed to save ${key} to storage:`, err);
   }
@@ -1128,21 +1170,33 @@ function saveToStorage<T>(key: string, data: T): void {
 class FleetStore {
   private listeners: Set<() => void> = new Set();
 
-  buses: Bus[] = loadFromStorage('buses', INITIAL_BUSES);
-  drivers: Driver[] = loadFromStorage('drivers', INITIAL_DRIVERS);
-  mechanics: Mechanic[] = loadFromStorage('mechanics', INITIAL_MECHANICS);
-  serviceRecords: ServiceRecord[] = loadFromStorage('serviceRecords', INITIAL_SERVICE_RECORDS);
-  inventory: InventoryItem[] = loadFromStorage('inventory', INITIAL_INVENTORY);
-  inventoryMovements: InventoryMovement[] = loadFromStorage('inventoryMovements', INITIAL_INVENTORY_MOVEMENTS);
-  routes: Route[] = loadFromStorage('routes', INITIAL_ROUTES);
-  trips: Trip[] = loadFromStorage('trips', INITIAL_TRIPS);
-  fuelRecords: FuelRecord[] = loadFromStorage('fuelRecords', INITIAL_FUEL_RECORDS);
-  expenses: Expense[] = loadFromStorage('expenses', INITIAL_EXPENSES);
-  loans: EmiLoan[] = loadFromStorage('loans', INITIAL_LOANS);
-  gpsVehicles: GpsVehicle[] = loadFromStorage('gpsVehicles', INITIAL_GPS_VEHICLES);
-  notifications: NotificationItem[] = loadFromStorage('notifications', INITIAL_NOTIFICATIONS);
-  auditLogs: AuditLog[] = loadFromStorage('auditLogs', INITIAL_AUDIT_LOGS);
-  profile: UserProfile = loadFromStorage('profile', INITIAL_PROFILE);
+  currentUserId: string | null = initialAuthOnLoad ? initialAuthOnLoad.id : null;
+  currentUserEmail: string | null = initialAuthOnLoad ? (initialAuthOnLoad.email || null) : null;
+  isDemoMode: boolean = !initialAuthOnLoad;
+
+  buses: Bus[] = loadFromStorage('buses', initialAuthOnLoad ? [] : INITIAL_BUSES);
+  drivers: Driver[] = loadFromStorage('drivers', initialAuthOnLoad ? [] : INITIAL_DRIVERS);
+  mechanics: Mechanic[] = loadFromStorage('mechanics', initialAuthOnLoad ? [] : INITIAL_MECHANICS);
+  serviceRecords: ServiceRecord[] = loadFromStorage('serviceRecords', initialAuthOnLoad ? [] : INITIAL_SERVICE_RECORDS);
+  inventory: InventoryItem[] = loadFromStorage('inventory', initialAuthOnLoad ? [] : INITIAL_INVENTORY);
+  inventoryMovements: InventoryMovement[] = loadFromStorage('inventoryMovements', initialAuthOnLoad ? [] : INITIAL_INVENTORY_MOVEMENTS);
+  routes: Route[] = loadFromStorage('routes', initialAuthOnLoad ? [] : INITIAL_ROUTES);
+  trips: Trip[] = loadFromStorage('trips', initialAuthOnLoad ? [] : INITIAL_TRIPS);
+  fuelRecords: FuelRecord[] = loadFromStorage('fuelRecords', initialAuthOnLoad ? [] : INITIAL_FUEL_RECORDS);
+  expenses: Expense[] = loadFromStorage('expenses', initialAuthOnLoad ? [] : INITIAL_EXPENSES);
+  loans: EmiLoan[] = loadFromStorage('loans', initialAuthOnLoad ? [] : INITIAL_LOANS);
+  gpsVehicles: GpsVehicle[] = loadFromStorage('gpsVehicles', initialAuthOnLoad ? [] : INITIAL_GPS_VEHICLES);
+  notifications: NotificationItem[] = loadFromStorage('notifications', initialAuthOnLoad ? [] : INITIAL_NOTIFICATIONS);
+  auditLogs: AuditLog[] = loadFromStorage('auditLogs', initialAuthOnLoad ? [] : INITIAL_AUDIT_LOGS);
+  profile: UserProfile = loadFromStorage('profile', initialAuthOnLoad ? {
+    id: initialAuthOnLoad.id,
+    full_name: initialAuthOnLoad.full_name || formatNameFromEmail(initialAuthOnLoad.email || ''),
+    email: initialAuthOnLoad.email || '',
+    phone: '',
+    job_title: 'Director of Fleet Operations',
+    company_name: 'FleetMind Logistics',
+    role: 'Super Admin'
+  } : INITIAL_PROFILE);
   settings: SystemSettings = loadFromStorage('settings', INITIAL_SETTINGS);
   lastUpdated: string = loadFromStorage('last_updated', new Date().toISOString());
 
@@ -1159,6 +1213,431 @@ class FleetStore {
 
   refresh(): void {
     this.notify();
+  }
+
+  setUser(userId: string | null, userEmail?: string | null, customProfile?: UserProfile | null) {
+    if (userId) {
+      this.currentUserId = userId;
+      this.currentUserEmail = userEmail || null;
+      this.isDemoMode = false;
+      currentStoragePrefix = `fleetmind_user_${userId}_`;
+
+      const resolvedName = customProfile?.full_name || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Manager');
+      const resolvedRole = customProfile?.role || 'Super Admin';
+
+      this.profile = loadFromStorage('profile', {
+        id: userId,
+        full_name: resolvedName,
+        email: userEmail || '',
+        phone: customProfile?.phone || '',
+        job_title: customProfile?.job_title || 'Director of Fleet Operations',
+        company_name: customProfile?.company_name || 'FleetMind Logistics',
+        role: resolvedRole
+      });
+
+      this.buses = loadFromStorage('buses', []);
+      this.drivers = loadFromStorage('drivers', []);
+      this.mechanics = loadFromStorage('mechanics', []);
+      this.serviceRecords = loadFromStorage('serviceRecords', []);
+      this.inventory = loadFromStorage('inventory', []);
+      this.inventoryMovements = loadFromStorage('inventoryMovements', []);
+      this.routes = loadFromStorage('routes', []);
+      this.trips = loadFromStorage('trips', []);
+      this.fuelRecords = loadFromStorage('fuelRecords', []);
+      this.expenses = loadFromStorage('expenses', []);
+      this.loans = loadFromStorage('loans', []);
+      this.gpsVehicles = loadFromStorage('gpsVehicles', []);
+      this.notifications = loadFromStorage('notifications', []);
+      this.auditLogs = loadFromStorage('auditLogs', []);
+      this.settings = loadFromStorage('settings', {
+        ...INITIAL_SETTINGS,
+        company_name: this.profile.company_name || 'FleetMind Logistics'
+      });
+
+      saveToStorage('profile', this.profile);
+      this.syncFromSupabase();
+    } else {
+      this.currentUserId = null;
+      this.currentUserEmail = null;
+      this.isDemoMode = true;
+      currentStoragePrefix = 'fleetmind_demo_';
+
+      this.buses = loadFromStorage('buses', INITIAL_BUSES);
+      this.drivers = loadFromStorage('drivers', INITIAL_DRIVERS);
+      this.mechanics = loadFromStorage('mechanics', INITIAL_MECHANICS);
+      this.serviceRecords = loadFromStorage('serviceRecords', INITIAL_SERVICE_RECORDS);
+      this.inventory = loadFromStorage('inventory', INITIAL_INVENTORY);
+      this.inventoryMovements = loadFromStorage('inventoryMovements', INITIAL_INVENTORY_MOVEMENTS);
+      this.routes = loadFromStorage('routes', INITIAL_ROUTES);
+      this.trips = loadFromStorage('trips', INITIAL_TRIPS);
+      this.fuelRecords = loadFromStorage('fuelRecords', INITIAL_FUEL_RECORDS);
+      this.expenses = loadFromStorage('expenses', INITIAL_EXPENSES);
+      this.loans = loadFromStorage('loans', INITIAL_LOANS);
+      this.gpsVehicles = loadFromStorage('gpsVehicles', INITIAL_GPS_VEHICLES);
+      this.notifications = loadFromStorage('notifications', INITIAL_NOTIFICATIONS);
+      this.auditLogs = loadFromStorage('auditLogs', INITIAL_AUDIT_LOGS);
+      this.profile = loadFromStorage('profile', INITIAL_PROFILE);
+      this.settings = loadFromStorage('settings', INITIAL_SETTINGS);
+    }
+    this.notify();
+  }
+
+  loadStarterTemplate() {
+    const starterBuses: Bus[] = [
+      {
+        id: `bus-starter-1`,
+        bus_number: 'FM-201',
+        registration_number: 'KA-01-EQ-1001',
+        model: 'Volvo 9600 B11R Multi-Axle',
+        manufacturer: 'Volvo Buses',
+        year: 2024,
+        capacity: 48,
+        status: 'active',
+        fuel_type: 'Diesel',
+        odometer: 14500,
+        assigned_driver: 'Ramesh Gowda',
+        route: 'Bengaluru - Hyderabad Express',
+        insurance_expiry: '2027-11-20',
+        registration_expiry: '2029-05-15',
+        last_service_date: '2026-09-10',
+        next_service_date: '2026-12-10',
+        notes: 'Starter fleet flagship coach.'
+      },
+      {
+        id: `bus-starter-2`,
+        bus_number: 'FM-202',
+        registration_number: 'KA-02-MH-2002',
+        model: 'Tata Starbus Ultra EV',
+        manufacturer: 'Tata Motors',
+        year: 2024,
+        capacity: 34,
+        status: 'active',
+        fuel_type: 'Electric',
+        odometer: 8200,
+        assigned_driver: 'Sunil Kumar',
+        route: 'Bengaluru Airport Corridor',
+        insurance_expiry: '2027-08-15',
+        registration_expiry: '2029-08-15',
+        last_service_date: '2026-09-01',
+        next_service_date: '2026-12-01',
+        notes: 'Electric airport express coach.'
+      },
+      {
+        id: `bus-starter-3`,
+        bus_number: 'FM-203',
+        registration_number: 'KA-03-TR-3003',
+        model: 'Scania Metrolink HD',
+        manufacturer: 'Scania',
+        year: 2023,
+        capacity: 53,
+        status: 'maintenance',
+        fuel_type: 'Diesel',
+        odometer: 42000,
+        route: 'Bengaluru - Chennai Expressway',
+        insurance_expiry: '2027-04-10',
+        registration_expiry: '2028-10-20',
+        last_service_date: '2026-08-15',
+        next_service_date: '2026-11-15',
+        notes: 'Undergoing routine brake pad service.'
+      }
+    ];
+
+    const starterDrivers: Driver[] = [
+      {
+        id: 'drv-starter-1',
+        name: 'Ramesh Gowda',
+        phone: '+91 98450 11223',
+        email: 'ramesh.gowda@transport.in',
+        license_number: 'KA01 20160012345',
+        license_expiry: '2028-06-15',
+        joining_date: '2024-01-10',
+        assigned_bus: 'FM-201',
+        status: 'active',
+        today_availability: 'available',
+        experience_years: 8,
+        total_trips: 140,
+        distance_km: 42000,
+        safety_score: 96
+      },
+      {
+        id: 'drv-starter-2',
+        name: 'Sunil Kumar',
+        phone: '+91 98450 44556',
+        email: 'sunil.kumar@transport.in',
+        license_number: 'KA02 20180054321',
+        license_expiry: '2029-03-20',
+        joining_date: '2024-03-01',
+        assigned_bus: 'FM-202',
+        status: 'active',
+        today_availability: 'on_trip',
+        experience_years: 6,
+        total_trips: 98,
+        distance_km: 29000,
+        safety_score: 94
+      }
+    ];
+
+    const starterRoutes: Route[] = [
+      {
+        id: 'rt-starter-1',
+        route_name: 'Bengaluru - Hyderabad Express',
+        route_code: 'EXP-BLR-HYD',
+        start_point: 'Bengaluru Majestic',
+        end_point: 'Hyderabad MGBS',
+        distance_km: 570,
+        estimated_time: '8h 30m',
+        fare: 1150,
+        assigned_buses: ['FM-201'],
+        assigned_drivers: ['Ramesh Gowda'],
+        stops: ['Hebbal', 'Anantapur Midway', 'Kurnool Toll', 'Shamshabad', 'MGBS'],
+        status: 'active'
+      }
+    ];
+
+    this.buses = starterBuses;
+    this.drivers = starterDrivers;
+    this.routes = starterRoutes;
+    saveToStorage('buses', this.buses);
+    saveToStorage('drivers', this.drivers);
+    saveToStorage('routes', this.routes);
+    this.logAudit('STARTER_TEMPLATE_LOADED', 'System', 'Workspace', 'Loaded 3 starter fleet vehicles and 2 drivers.');
+    this.notify();
+
+    starterBuses.forEach(b => this.syncBusToSupabase(b));
+    starterDrivers.forEach(d => this.syncDriverToSupabase(d));
+  }
+
+  clearUserData() {
+    this.buses = [];
+    this.drivers = [];
+    this.mechanics = [];
+    this.serviceRecords = [];
+    this.inventory = [];
+    this.inventoryMovements = [];
+    this.routes = [];
+    this.trips = [];
+    this.fuelRecords = [];
+    this.expenses = [];
+    this.loans = [];
+    this.gpsVehicles = [];
+    this.notifications = [];
+    this.auditLogs = [];
+    saveToStorage('buses', []);
+    saveToStorage('drivers', []);
+    saveToStorage('mechanics', []);
+    saveToStorage('serviceRecords', []);
+    saveToStorage('inventory', []);
+    saveToStorage('inventoryMovements', []);
+    saveToStorage('routes', []);
+    saveToStorage('trips', []);
+    saveToStorage('fuelRecords', []);
+    saveToStorage('expenses', []);
+    saveToStorage('loans', []);
+    saveToStorage('gpsVehicles', []);
+    saveToStorage('notifications', []);
+    saveToStorage('auditLogs', []);
+    this.logAudit('WORKSPACE_CLEARED', 'System', 'Workspace', 'Cleared fleet records in current workspace.');
+    this.notify();
+  }
+
+  async syncFromSupabase() {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const { data: busesData, error: busesErr } = await supabase.from('buses').select('*');
+      if (!busesErr && busesData && busesData.length > 0) {
+        this.buses = busesData.map(b => ({
+          id: b.id,
+          bus_number: b.bus_number,
+          registration_number: b.registration_number,
+          model: b.model,
+          manufacturer: b.manufacturer,
+          year: b.year,
+          capacity: b.capacity,
+          status: b.status as any,
+          fuel_type: b.fuel_type as any,
+          odometer: b.odometer,
+          assigned_driver: b.assigned_driver || undefined,
+          route: b.route || undefined,
+          insurance_expiry: b.insurance_expiry,
+          registration_expiry: b.registration_expiry,
+          last_service_date: b.last_service_date,
+          next_service_date: b.next_service_date,
+          notes: b.notes || undefined,
+          created_at: b.created_at,
+          updated_at: b.updated_at
+        }));
+        saveToStorage('buses', this.buses);
+      }
+
+      const { data: driversData, error: driversErr } = await supabase.from('drivers').select('*');
+      if (!driversErr && driversData && driversData.length > 0) {
+        this.drivers = driversData.map(d => ({
+          id: d.id,
+          name: d.name,
+          phone: d.phone,
+          email: d.email,
+          license_number: d.license_number,
+          license_expiry: d.license_expiry,
+          joining_date: d.joining_date,
+          assigned_bus: d.assigned_bus || undefined,
+          status: d.status as any,
+          today_availability: d.today_availability as any,
+          experience_years: d.experience_years || 0,
+          total_trips: d.total_trips || 0,
+          distance_km: d.distance_km || 0,
+          safety_score: d.safety_score || 95,
+          profile_photo: d.profile_photo || undefined,
+          emergency_contact: d.emergency_contact || undefined
+        }));
+        saveToStorage('drivers', this.drivers);
+      }
+
+      const { data: routesData, error: routesErr } = await supabase.from('routes').select('*');
+      if (!routesErr && routesData && routesData.length > 0) {
+        this.routes = routesData.map(r => ({
+          id: r.id,
+          route_name: r.route_name,
+          route_code: r.route_code,
+          start_point: r.start_point,
+          end_point: r.end_point,
+          distance_km: r.distance_km,
+          estimated_time: r.estimated_time,
+          fare: r.fare,
+          assigned_buses: r.assigned_buses || [],
+          assigned_drivers: r.assigned_drivers || [],
+          stops: r.stops || [],
+          status: r.status as any
+        }));
+        saveToStorage('routes', this.routes);
+      }
+
+      const { data: tripsData, error: tripsErr } = await supabase.from('trips').select('*');
+      if (!tripsErr && tripsData && tripsData.length > 0) {
+        this.trips = tripsData;
+        saveToStorage('trips', this.trips);
+      }
+
+      const { data: fuelData, error: fuelErr } = await supabase.from('fuel_records').select('*');
+      if (!fuelErr && fuelData && fuelData.length > 0) {
+        this.fuelRecords = fuelData.map((f: any) => ({
+          ...f,
+          receipt_number: f.receipt_number || undefined,
+          notes: f.notes || undefined,
+          calculated_efficiency: f.calculated_efficiency || undefined
+        }));
+        saveToStorage('fuelRecords', this.fuelRecords);
+      }
+
+      const { data: srvData, error: srvErr } = await supabase.from('service_records').select('*');
+      if (!srvErr && srvData && srvData.length > 0) {
+        this.serviceRecords = srvData.map((s: any) => ({
+          ...s,
+          service_type: s.service_type as any
+        }));
+        saveToStorage('serviceRecords', this.serviceRecords);
+      }
+
+      const { data: expData, error: expErr } = await supabase.from('expenses').select('*');
+      if (!expErr && expData && expData.length > 0) {
+        this.expenses = expData.map((e: any) => ({
+          ...e,
+          category: e.category as any
+        }));
+        saveToStorage('expenses', this.expenses);
+      }
+
+      this.notify();
+    } catch (err) {
+      console.warn('[Supabase Sync] Sync failed:', err);
+    }
+  }
+
+  async syncBusToSupabase(bus: Bus) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let orgId = '00000000-0000-0000-0000-000000000001';
+      const { data: profileData } = await (supabase.from('profiles') as any)
+        .select('organization_id')
+        .eq('id', this.currentUserId)
+        .maybeSingle();
+      if (profileData?.organization_id) {
+        orgId = profileData.organization_id;
+      }
+
+      await (supabase.from('buses') as any).upsert({
+        bus_number: bus.bus_number,
+        registration_number: bus.registration_number,
+        model: bus.model,
+        manufacturer: bus.manufacturer,
+        year: bus.year,
+        capacity: bus.capacity,
+        status: bus.status,
+        fuel_type: bus.fuel_type,
+        odometer: bus.odometer,
+        assigned_driver: bus.assigned_driver || null,
+        route: bus.route || null,
+        insurance_expiry: bus.insurance_expiry,
+        registration_expiry: bus.registration_expiry,
+        last_service_date: bus.last_service_date,
+        next_service_date: bus.next_service_date,
+        notes: bus.notes || null,
+        organization_id: orgId
+      }, { onConflict: 'organization_id,bus_number' });
+    } catch (err) {
+      console.warn('[Supabase Sync] Could not sync bus:', err);
+    }
+  }
+
+  async deleteBusFromSupabase(busNumber: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      await supabase.from('buses').delete().eq('bus_number', busNumber);
+    } catch (err) {
+      console.warn('[Supabase Sync] Could not delete bus:', err);
+    }
+  }
+
+  async syncDriverToSupabase(driver: Driver) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let orgId = '00000000-0000-0000-0000-000000000001';
+      const { data: profileData } = await (supabase.from('profiles') as any)
+        .select('organization_id')
+        .eq('id', this.currentUserId)
+        .maybeSingle();
+      if (profileData?.organization_id) {
+        orgId = profileData.organization_id;
+      }
+
+      await (supabase.from('drivers') as any).upsert({
+        name: driver.name,
+        phone: driver.phone,
+        email: driver.email,
+        license_number: driver.license_number,
+        license_expiry: driver.license_expiry,
+        joining_date: driver.joining_date,
+        assigned_bus: driver.assigned_bus || null,
+        status: driver.status,
+        today_availability: driver.today_availability,
+        experience_years: driver.experience_years,
+        total_trips: driver.total_trips,
+        distance_km: driver.distance_km,
+        safety_score: driver.safety_score,
+        emergency_contact: driver.emergency_contact || null,
+        organization_id: orgId
+      }, { onConflict: 'organization_id,license_number' });
+    } catch (err) {
+      console.warn('[Supabase Sync] Could not sync driver:', err);
+    }
+  }
+
+  async deleteDriverFromSupabase(name: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      await supabase.from('drivers').delete().eq('name', name);
+    } catch (err) {
+      console.warn('[Supabase Sync] Could not delete driver:', err);
+    }
   }
 
   // Audit Log helper
@@ -1204,6 +1683,7 @@ class FleetStore {
     this.buses = [newBus, ...this.buses];
     saveToStorage('buses', this.buses);
     this.logAudit('BUS_CREATED', 'Bus', newBus.bus_number, `Added new vehicle ${newBus.bus_number} (${newBus.registration_number})`);
+    this.syncBusToSupabase(newBus);
     this.notify();
     return newBus;
   }
@@ -1215,6 +1695,7 @@ class FleetStore {
     this.buses[idx] = updated;
     saveToStorage('buses', this.buses);
     this.logAudit('BUS_UPDATED', 'Bus', updated.bus_number, `Updated details for vehicle ${updated.bus_number}`);
+    this.syncBusToSupabase(updated);
     this.notify();
     return updated;
   }
@@ -1225,6 +1706,7 @@ class FleetStore {
     this.buses = this.buses.filter(b => b.id !== id);
     saveToStorage('buses', this.buses);
     this.logAudit('BUS_DELETED', 'Bus', bus.bus_number, `Deleted vehicle ${bus.bus_number} from fleet.`);
+    this.deleteBusFromSupabase(bus.bus_number);
     this.notify();
     return true;
   }
@@ -1239,6 +1721,7 @@ class FleetStore {
     this.drivers = [newDriver, ...this.drivers];
     saveToStorage('drivers', this.drivers);
     this.logAudit('DRIVER_ADDED', 'Driver', newDriver.name, `Onboarded driver ${newDriver.name} (Licence: ${newDriver.license_number})`);
+    this.syncDriverToSupabase(newDriver);
     this.notify();
     return newDriver;
   }
@@ -1250,6 +1733,7 @@ class FleetStore {
     this.drivers[idx] = updated;
     saveToStorage('drivers', this.drivers);
     this.logAudit('DRIVER_UPDATED', 'Driver', updated.name, `Updated profile/availability for driver ${updated.name}`);
+    this.syncDriverToSupabase(updated);
     this.notify();
     return updated;
   }
@@ -1260,6 +1744,7 @@ class FleetStore {
     this.drivers = this.drivers.filter(d => d.id !== id);
     saveToStorage('drivers', this.drivers);
     this.logAudit('DRIVER_REMOVED', 'Driver', driver.name, `De-registered driver ${driver.name}.`);
+    this.deleteDriverFromSupabase(driver.name);
     this.notify();
     return true;
   }
@@ -1706,7 +2191,10 @@ class FleetStore {
 
   // RESET TO DEMO DATA
   resetToDemo() {
-    localStorage.clear();
+    if (this.currentUserId && !this.isDemoMode) {
+      this.clearUserData();
+      return;
+    }
     this.buses = INITIAL_BUSES;
     this.drivers = INITIAL_DRIVERS;
     this.mechanics = INITIAL_MECHANICS;
@@ -1723,6 +2211,22 @@ class FleetStore {
     this.auditLogs = INITIAL_AUDIT_LOGS;
     this.profile = INITIAL_PROFILE;
     this.settings = INITIAL_SETTINGS;
+    saveToStorage('buses', this.buses);
+    saveToStorage('drivers', this.drivers);
+    saveToStorage('mechanics', this.mechanics);
+    saveToStorage('serviceRecords', this.serviceRecords);
+    saveToStorage('inventory', this.inventory);
+    saveToStorage('inventoryMovements', this.inventoryMovements);
+    saveToStorage('routes', this.routes);
+    saveToStorage('trips', this.trips);
+    saveToStorage('fuelRecords', this.fuelRecords);
+    saveToStorage('expenses', this.expenses);
+    saveToStorage('loans', this.loans);
+    saveToStorage('gpsVehicles', this.gpsVehicles);
+    saveToStorage('notifications', this.notifications);
+    saveToStorage('auditLogs', this.auditLogs);
+    saveToStorage('profile', this.profile);
+    saveToStorage('settings', this.settings);
     this.notify();
   }
 }

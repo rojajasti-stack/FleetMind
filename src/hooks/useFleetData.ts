@@ -76,5 +76,8 @@ export function useFleetData() {
     updateProfile: fleetStore.updateProfile.bind(fleetStore),
     updateSettings: fleetStore.updateSettings.bind(fleetStore),
     resetToDemo: fleetStore.resetToDemo.bind(fleetStore),
+    loadStarterTemplate: fleetStore.loadStarterTemplate.bind(fleetStore),
+    clearUserData: fleetStore.clearUserData.bind(fleetStore),
+    isDemoMode: fleetStore.isDemoMode,
   };
 }

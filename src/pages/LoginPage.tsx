@@ -8,8 +8,8 @@ export const LoginPage: React.FC = () => {
   const location = useLocation();
   const { signInWithEmail, signInWithGoogle, loginAsDemo, isSupabaseConfigured } = useAuth();
 
-  const [email, setEmail] = useState('demo@fleetmind.ai');
-  const [password, setPassword] = useState('FleetMind2026!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);

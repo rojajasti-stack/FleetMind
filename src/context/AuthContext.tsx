@@ -8,7 +8,7 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import type { User, Session, AuthError, Factor } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
-import { fleetStore } from '../services/store';
+import { fleetStore, formatNameFromEmail } from '../services/store';
 import { rateLimiter } from '../utils/rateLimiter';
 import type { UserProfile } from '../types';
 
@@ -68,8 +68,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const authMode: 'supabase' | 'demo' = isSupabaseConfigured && !demoLoggedIn ? 'supabase' : 'demo';
 
-  // Load profile from Supabase or fallback to local store
-  const loadProfile = useCallback(async (userId?: string, userEmail?: string) => {
+  // Load profile from Supabase or fallback to user metadata / clean account
+  const loadProfile = useCallback(async (userId?: string, userEmail?: string, authUser?: User | null) => {
     if (isSupabaseConfigured && supabase && userId) {
       try {
         const { data, error } = await supabase
@@ -81,15 +81,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (data && !error) {
           const loaded: UserProfile = {
             id: data.id,
-            full_name: data.full_name,
-            email: data.email,
+            full_name: data.full_name || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Manager'),
+            email: data.email || userEmail || '',
             phone: data.phone || '',
-            job_title: data.job_title || 'Fleet Operator',
+            job_title: data.job_title || 'Director of Fleet Operations',
             company_name: data.company_name || 'FleetMind Logistics',
-            avatar_url: data.avatar_url || undefined,
-            role: (data.role as UserProfile['role']) || 'Fleet Manager'
+            avatar_url: data.avatar_url || authUser?.user_metadata?.avatar_url || undefined,
+            role: (data.role as UserProfile['role']) || 'Super Admin'
           };
           setProfile(loaded);
+          fleetStore.setUser(userId, userEmail, loaded);
           return;
         }
       } catch {
@@ -97,11 +98,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Default profile from local store
-    setProfile({
-      ...fleetStore.profile,
-      email: userEmail || fleetStore.profile.email
-    });
+    // If no Supabase profile row exists yet, construct a clean user profile from auth metadata
+    if (userId) {
+      const metadataName = authUser?.user_metadata?.full_name || authUser?.user_metadata?.name;
+      const derivedName = metadataName || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Manager');
+      const cleanUserProfile: UserProfile = {
+        id: userId,
+        full_name: derivedName,
+        email: userEmail || '',
+        phone: authUser?.phone || '',
+        job_title: 'Director of Fleet Operations',
+        company_name: authUser?.user_metadata?.company_name || 'FleetMind Logistics',
+        avatar_url: authUser?.user_metadata?.avatar_url || undefined,
+        role: (authUser?.user_metadata?.role as UserProfile['role']) || 'Super Admin'
+      };
+      setProfile(cleanUserProfile);
+      fleetStore.setUser(userId, userEmail, cleanUserProfile);
+
+      // Try to create/upsert profile row in Supabase profiles table in background
+      if (isSupabaseConfigured && supabase) {
+        (async () => {
+          try {
+            let orgId = '00000000-0000-0000-0000-000000000001';
+            const { data: orgData } = await (supabase.from('organizations' as any) as any).select('id').limit(1).maybeSingle();
+            if (orgData?.id) orgId = orgData.id;
+
+            await (supabase.from('profiles') as any).upsert({
+              id: userId,
+              organization_id: orgId,
+              full_name: cleanUserProfile.full_name,
+              email: cleanUserProfile.email,
+              role: cleanUserProfile.role,
+              job_title: cleanUserProfile.job_title,
+              company_name: cleanUserProfile.company_name
+            }, { onConflict: 'id' });
+          } catch (e) {
+            console.warn('[Auth] Background profile upsert notice:', e);
+          }
+        })();
+      }
+      return;
+    }
+
+    // Default profile only for guest/demo mode
+    setProfile(fleetStore.profile);
   }, []);
 
   // Initialize Session
@@ -118,11 +158,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           if (mounted) {
             if (initialSession?.user) {
+              // Real cloud session active: clear demo flags
+              localStorage.removeItem('fleetmind_auth_token');
+              setDemoLoggedIn(false);
               setSession(initialSession);
               setUser(initialSession.user);
-              await loadProfile(initialSession.user.id, initialSession.user.email);
+              await loadProfile(initialSession.user.id, initialSession.user.email, initialSession.user);
             } else if (demoLoggedIn) {
               // Running in local demo mode
+              fleetStore.setUser(null, null, null);
               setProfile(fleetStore.profile);
             }
           }
@@ -132,6 +176,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         // Offline / unconfigured mode
         if (demoLoggedIn) {
+          fleetStore.setUser(null, null, null);
           setProfile(fleetStore.profile);
         }
       }
@@ -154,12 +199,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
           if (currentSession?.user) {
-            await loadProfile(currentSession.user.id, currentSession.user.email);
+            localStorage.removeItem('fleetmind_auth_token');
+            setDemoLoggedIn(false);
+            await loadProfile(currentSession.user.id, currentSession.user.email, currentSession.user);
           }
         } else if (event === 'SIGNED_OUT') {
           setProfile(null);
           setDemoLoggedIn(false);
           localStorage.removeItem('fleetmind_auth_token');
+          fleetStore.setUser(null, null, null);
         }
       });
       authListener = data.subscription;
@@ -212,9 +260,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       rateLimiter.reset();
+      localStorage.removeItem('fleetmind_auth_token');
+      setDemoLoggedIn(false);
       setUser(data.user);
       setSession(data.session);
-      await loadProfile(data.user.id, data.user.email);
+      await loadProfile(data.user.id, data.user.email, data.user);
       return { error: null };
     } catch (err: unknown) {
       rateLimiter.recordFailure();
@@ -266,9 +316,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const needsEmailVerification = !data.session;
 
       if (data.session && data.user) {
+        localStorage.removeItem('fleetmind_auth_token');
+        setDemoLoggedIn(false);
         setUser(data.user);
         setSession(data.session);
-        await loadProfile(data.user.id, data.user.email);
+        await loadProfile(data.user.id, data.user.email, data.user);
       }
 
       return { error: null, needsEmailVerification };
@@ -331,6 +383,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     setSession(null);
     setProfile(null);
+    fleetStore.setUser(null, null, null);
 
     if (isSupabaseConfigured && supabase) {
       try {
@@ -495,6 +548,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginAsDemo = () => {
     localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
     setDemoLoggedIn(true);
+    fleetStore.setUser(null, null, null);
     setProfile(fleetStore.profile);
   };
 
