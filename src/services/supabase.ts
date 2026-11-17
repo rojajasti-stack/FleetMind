@@ -28,9 +28,19 @@ export interface ConnectionTestResult {
   latencyMs?: number;
 }
 
-// 1. Framework-appropriate Environment Variables
-const rawSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-const rawSupabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+// 1. Framework-appropriate Environment Variables (Supports both VITE_ and NEXT_PUBLIC_ prefixes)
+const rawSupabaseUrl = (
+  import.meta.env.VITE_SUPABASE_URL ||
+  import.meta.env.NEXT_PUBLIC_SUPABASE_URL ||
+  ''
+).trim();
+
+const rawSupabaseAnonKey = (
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  ''
+).trim();
 
 // 2. Environment Variable Validation
 export function validateSupabaseConfig(): SupabaseConfigStatus {

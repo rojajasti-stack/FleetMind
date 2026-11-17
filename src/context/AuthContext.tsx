@@ -289,6 +289,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
+      // Pre-flight check: verify if Google provider is configured in Supabase
+      const rawSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+      const rawSupabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+
+      try {
+        const settingsRes = await fetch(`${rawSupabaseUrl}/auth/v1/settings`, {
+          headers: { apikey: rawSupabaseAnonKey }
+        });
+        if (settingsRes.ok) {
+          const settings = await settingsRes.json();
+          if (settings?.external?.google === false) {
+            return {
+              error: 'Google Sign-In is not yet enabled in your Supabase project. To use it, enable Google in your Supabase Dashboard (Authentication -> Providers). For now, please sign in with your Email & Password or use the Demo Operator login.'
+            };
+          }
+        }
+      } catch {
+        // If settings endpoint is unreachable, proceed to standard OAuth attempt
+      }
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {

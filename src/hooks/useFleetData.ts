@@ -28,8 +28,10 @@ export function useFleetData() {
     auditLogs: fleetStore.auditLogs,
     profile: fleetStore.profile,
     settings: fleetStore.settings,
+    lastUpdated: fleetStore.lastUpdated,
 
     // Actions
+    refreshData: fleetStore.refresh.bind(fleetStore),
     addBus: fleetStore.addBus.bind(fleetStore),
     updateBus: fleetStore.updateBus.bind(fleetStore),
     deleteBus: fleetStore.deleteBus.bind(fleetStore),

@@ -1144,14 +1144,21 @@ class FleetStore {
   auditLogs: AuditLog[] = loadFromStorage('auditLogs', INITIAL_AUDIT_LOGS);
   profile: UserProfile = loadFromStorage('profile', INITIAL_PROFILE);
   settings: SystemSettings = loadFromStorage('settings', INITIAL_SETTINGS);
+  lastUpdated: string = loadFromStorage('last_updated', new Date().toISOString());
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  private notify() {
+  notify() {
+    this.lastUpdated = new Date().toISOString();
+    saveToStorage('last_updated', this.lastUpdated);
     this.listeners.forEach(l => l());
+  }
+
+  refresh(): void {
+    this.notify();
   }
 
   // Audit Log helper

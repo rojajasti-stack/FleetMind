@@ -323,10 +323,13 @@ export const AppLayout: React.FC = () => {
               <kbd className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-slate-400 border border-white/10">⌘K</kbd>
             </button>
 
-            {/* Demo Mode Badge */}
+            {/* Storage & Auth Mode Badge */}
             <div className="flex items-center gap-2">
-              <span className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-cyan-500/10 text-[#00C2FF] border border-[#00C2FF]/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00C2FF] animate-pulse" />
+              <span
+                title="Fleet operational records are stored in browser localStorage. Cloud database migration pending."
+                className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                 Local Storage Mode
               </span>
 
