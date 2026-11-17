@@ -282,7 +282,7 @@ export const ProfilePage: React.FC = () => {
               <input
                 type="email"
                 disabled
-                value={formData.email}
+                value={user?.email || formData.email || ''}
                 className="w-full bg-[#08111F]/50 border border-white/5 rounded-xl px-3.5 py-2 text-xs text-slate-400 cursor-not-allowed"
               />
             </div>

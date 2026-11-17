@@ -1123,8 +1123,8 @@ const INITIAL_AUDIT_LOGS: AuditLog[] = [
   { id: 'aud-5', timestamp: '2026-10-09T11:05:30Z', user: 'Inventory Store', action: 'STOCK_CHECK', entity_type: 'Inventory', entity_id: 'inv-1', details: 'Audited Disc Brake Pads physical stock; identified low threshold.' }
 ];
 
-const INITIAL_PROFILE: UserProfile = {
-  id: 'usr-1',
+const INITIAL_DEMO_PROFILE: UserProfile = {
+  id: 'usr-demo',
   full_name: 'Tejeshwar Reddy',
   email: 'tejeshwar@fleetmind.ai',
   phone: '+91 98490 12345',
@@ -1132,6 +1132,16 @@ const INITIAL_PROFILE: UserProfile = {
   company_name: 'FleetMind Transport Solutions Ltd.',
   role: 'Fleet Manager',
   avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80'
+};
+
+const EMPTY_GUEST_PROFILE: UserProfile = {
+  id: '',
+  full_name: '',
+  email: '',
+  phone: '',
+  job_title: 'Fleet Operations',
+  company_name: 'FleetMind Logistics',
+  role: 'Guest'
 };
 
 const INITIAL_SETTINGS: SystemSettings = {
@@ -1217,7 +1227,7 @@ class FleetStore {
     job_title: 'Director of Fleet Operations',
     company_name: 'FleetMind Logistics',
     role: 'Normal User'
-  } : INITIAL_PROFILE;
+  } : EMPTY_GUEST_PROFILE;
   settings: SystemSettings = INITIAL_SETTINGS;
   lastUpdated: string = new Date().toISOString();
 
@@ -1304,7 +1314,7 @@ class FleetStore {
       this.gpsVehicles = [];
       this.notifications = [];
       this.auditLogs = [];
-      this.profile = INITIAL_PROFILE;
+      this.profile = EMPTY_GUEST_PROFILE;
       this.settings = INITIAL_SETTINGS;
     }
     this.notify();
@@ -1332,7 +1342,7 @@ class FleetStore {
     this.gpsVehicles = loadFromStorage('gpsVehicles', INITIAL_GPS_VEHICLES);
     this.notifications = loadFromStorage('notifications', INITIAL_NOTIFICATIONS);
     this.auditLogs = loadFromStorage('auditLogs', INITIAL_AUDIT_LOGS);
-    this.profile = loadFromStorage('profile', INITIAL_PROFILE);
+    this.profile = loadFromStorage('profile', INITIAL_DEMO_PROFILE);
     this.settings = loadFromStorage('settings', INITIAL_SETTINGS);
     this.notify();
   }
@@ -3487,7 +3497,7 @@ class FleetStore {
     this.gpsVehicles = INITIAL_GPS_VEHICLES;
     this.notifications = INITIAL_NOTIFICATIONS;
     this.auditLogs = INITIAL_AUDIT_LOGS;
-    this.profile = INITIAL_PROFILE;
+    this.profile = INITIAL_DEMO_PROFILE;
     this.settings = INITIAL_SETTINGS;
     saveToStorage('buses', this.buses);
     saveToStorage('drivers', this.drivers);

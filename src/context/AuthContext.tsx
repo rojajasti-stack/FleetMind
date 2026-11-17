@@ -64,11 +64,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [demoLoggedIn, setDemoLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('fleetmind_auth_token') === 'demo_session_active';
+    // Clear legacy mock demo token if present
+    if (typeof window !== 'undefined' && localStorage.getItem('fleetmind_auth_token') === 'demo_session_active') {
+      localStorage.removeItem('fleetmind_auth_token');
+    }
+    return sessionStorage.getItem('fleetmind_demo_session') === 'active' ||
+           localStorage.getItem('fleetmind_demo_mode') === 'true';
   });
   const [profileError, setProfileError] = useState<string | null>(null);
 
-  const authMode: 'supabase' | 'demo' = isSupabaseConfigured && !demoLoggedIn ? 'supabase' : 'demo';
+  const authMode: 'supabase' | 'demo' = demoLoggedIn ? 'demo' : 'supabase';
 
   // Load profile from Supabase with strict security (never assign Super Admin or upsert privileged roles)
   const loadProfile = useCallback(async (userId?: string, userEmail?: string, authUser?: User | null) => {
@@ -176,17 +181,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (initialSession?.user) {
               // Real cloud session active: clear demo flags
               localStorage.removeItem('fleetmind_auth_token');
+              localStorage.removeItem('fleetmind_demo_mode');
+              sessionStorage.removeItem('fleetmind_demo_session');
               setDemoLoggedIn(false);
               setSession(initialSession);
               setUser(initialSession.user);
               await loadProfile(initialSession.user.id, initialSession.user.email, initialSession.user);
             } else if (demoLoggedIn) {
-              // Running in local demo mode
+              // Running in local demo mode only if explicitly activated
               fleetStore.loadDemoData();
               setProfile(fleetStore.profile);
             } else {
+              // No session and no demo mode: secure empty state, will redirect to /login
               fleetStore.setUser(null, null, null);
               setProfile(null);
+              setUser(null);
+              setSession(null);
             }
           }
         } catch (err) {
@@ -195,8 +205,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         // Offline / unconfigured mode
         if (demoLoggedIn) {
-          fleetStore.setUser(null, null, null);
+          fleetStore.loadDemoData();
           setProfile(fleetStore.profile);
+        } else {
+          fleetStore.setUser(null, null, null);
+          setProfile(null);
+          setUser(null);
+          setSession(null);
         }
       }
 
@@ -219,6 +234,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
           if (currentSession?.user) {
             localStorage.removeItem('fleetmind_auth_token');
+            localStorage.removeItem('fleetmind_demo_mode');
+            sessionStorage.removeItem('fleetmind_demo_session');
             setDemoLoggedIn(false);
             await loadProfile(currentSession.user.id, currentSession.user.email, currentSession.user);
           }
@@ -226,6 +243,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setProfile(null);
           setDemoLoggedIn(false);
           localStorage.removeItem('fleetmind_auth_token');
+          localStorage.removeItem('fleetmind_demo_mode');
+          sessionStorage.removeItem('fleetmind_demo_session');
           fleetStore.setUser(null, null, null);
         }
       });
@@ -251,16 +270,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     if (!isSupabaseConfigured || !supabase) {
-      // Offline fallback mode
-      if (email && password) {
-        rateLimiter.reset();
-        localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
-        setDemoLoggedIn(true);
-        setProfile(fleetStore.profile);
-        return { error: null };
-      }
       rateLimiter.recordFailure();
-      return { error: 'Please enter a valid email and password.' };
+      return {
+        error: 'Cloud database connection is currently unavailable. Please verify network or Supabase status.'
+      };
     }
 
     try {
@@ -280,6 +293,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       rateLimiter.reset();
       localStorage.removeItem('fleetmind_auth_token');
+      localStorage.removeItem('fleetmind_demo_mode');
+      sessionStorage.removeItem('fleetmind_demo_session');
       setDemoLoggedIn(false);
       setUser(data.user);
       setSession(data.session);
@@ -300,16 +315,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     captchaToken?: string
   ) => {
     if (!isSupabaseConfigured || !supabase) {
-      // Offline fallback mode
-      localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
-      setDemoLoggedIn(true);
-      setProfile({
-        ...fleetStore.profile,
-        full_name: metadata.fullName,
-        company_name: metadata.companyName || fleetStore.profile.company_name,
-        email
-      });
-      return { error: null, needsEmailVerification: false };
+      return { error: 'Registration requires an active Supabase cloud connection.' };
     }
 
     try {
@@ -336,6 +342,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (data.session && data.user) {
         localStorage.removeItem('fleetmind_auth_token');
+        localStorage.removeItem('fleetmind_demo_mode');
+        sessionStorage.removeItem('fleetmind_demo_session');
         setDemoLoggedIn(false);
         setUser(data.user);
         setSession(data.session);
@@ -352,11 +360,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // 3. Google Sign In
   const signInWithGoogle = async () => {
     if (!isSupabaseConfigured || !supabase) {
-      // In demo mode, simulate successful login
-      localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
-      setDemoLoggedIn(true);
-      setProfile(fleetStore.profile);
-      return { error: null };
+      return { error: 'Google sign-in requires an active Supabase cloud connection.' };
     }
 
     try {
@@ -398,6 +402,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signOut = async () => {
     rateLimiter.reset();
     localStorage.removeItem('fleetmind_auth_token');
+    localStorage.removeItem('fleetmind_demo_mode');
+    sessionStorage.removeItem('fleetmind_demo_session');
     setDemoLoggedIn(false);
     setUser(null);
     setSession(null);
@@ -564,9 +570,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Demo Login Quick Action
+  // Demo Login Quick Action (EXPLICIT USER INVOCATION ONLY)
   const loginAsDemo = () => {
-    localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
+    localStorage.removeItem('fleetmind_auth_token');
+    localStorage.setItem('fleetmind_demo_mode', 'true');
+    sessionStorage.setItem('fleetmind_demo_session', 'active');
     setDemoLoggedIn(true);
     fleetStore.loadDemoData();
     setProfile(fleetStore.profile);

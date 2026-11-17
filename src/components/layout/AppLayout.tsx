@@ -35,7 +35,15 @@ export const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const { notifications, markAllNotificationsAsRead, profile: storeProfile, resetToDemo, buses, drivers, routes } = useFleetData();
   const { signOut, profile: authProfile, user, authMode } = useAuth();
-  const profile = authProfile || storeProfile;
+  const profile = authProfile || (user ? {
+    id: user.id,
+    full_name: (user.user_metadata?.full_name as string) || (user.email ? user.email.split('@')[0].replace(/[._-]/g, ' ') : 'Fleet Operator'),
+    email: user.email || '',
+    role: 'Normal User' as const,
+    phone: '',
+    job_title: 'Fleet Operations',
+    company_name: 'Fleet Operations'
+  } : storeProfile);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 

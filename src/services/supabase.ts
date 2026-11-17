@@ -29,17 +29,18 @@ export interface ConnectionTestResult {
 }
 
 // 1. Framework-appropriate Environment Variables (Supports both VITE_ and NEXT_PUBLIC_ prefixes)
+// Production project: ckwhhrixludchrzlshak
 const rawSupabaseUrl = (
   import.meta.env.VITE_SUPABASE_URL ||
   import.meta.env.NEXT_PUBLIC_SUPABASE_URL ||
-  ''
+  'https://ckwhhrixludchrzlshak.supabase.co'
 ).trim();
 
 const rawSupabaseAnonKey = (
   import.meta.env.VITE_SUPABASE_ANON_KEY ||
   import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
   import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  ''
+  'sb_publishable_BvUeydagfDwZ3Wk26557eA_KNx3fOmV'
 ).trim();
 
 // 2. Environment Variable Validation
