@@ -11,8 +11,19 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+export type OrganizationRow = {
+  id: string;
+  name: string;
+  slug: string;
+  billing_tier: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProfileRow = {
   id: string;
+  organization_id?: string;
   full_name: string;
   email: string;
   phone: string | null;
@@ -26,6 +37,7 @@ export type ProfileRow = {
 
 export type BusRow = {
   id: string;
+  organization_id?: string;
   bus_number: string;
   registration_number: string;
   model: string;
@@ -48,6 +60,7 @@ export type BusRow = {
 
 export type DriverRow = {
   id: string;
+  organization_id?: string;
   name: string;
   phone: string;
   email: string;
@@ -69,6 +82,7 @@ export type DriverRow = {
 
 export type MechanicRow = {
   id: string;
+  organization_id?: string;
   name: string;
   phone: string;
   specialty: string;
@@ -80,6 +94,7 @@ export type MechanicRow = {
 
 export type RouteRow = {
   id: string;
+  organization_id?: string;
   route_name: string;
   route_code: string;
   start_point: string;
@@ -96,6 +111,7 @@ export type RouteRow = {
 
 export type TripRow = {
   id: string;
+  organization_id?: string;
   trip_code: string;
   route_id: string;
   route_name: string;
@@ -116,6 +132,7 @@ export type TripRow = {
 
 export type ServiceRecordRow = {
   id: string;
+  organization_id?: string;
   bus_number: string;
   service_type: string;
   service_date: string;
@@ -131,6 +148,7 @@ export type ServiceRecordRow = {
 
 export type InventoryRow = {
   id: string;
+  organization_id?: string;
   item_name: string;
   sku: string;
   category: string;
@@ -146,6 +164,7 @@ export type InventoryRow = {
 
 export type InventoryMovementRow = {
   id: string;
+  organization_id?: string;
   item_id: string;
   item_name: string;
   type: 'received' | 'issued';
@@ -158,6 +177,7 @@ export type InventoryMovementRow = {
 
 export type FuelRecordRow = {
   id: string;
+  organization_id?: string;
   bus_number: string;
   date: string;
   liters: number;
@@ -174,6 +194,7 @@ export type FuelRecordRow = {
 
 export type ExpenseRow = {
   id: string;
+  organization_id?: string;
   category: string;
   type: 'revenue' | 'expense';
   amount: number;
@@ -187,6 +208,7 @@ export type ExpenseRow = {
 
 export type LoanRow = {
   id: string;
+  organization_id?: string;
   loan_id: string;
   lender: string;
   bus_number: string;
@@ -206,6 +228,7 @@ export type LoanRow = {
 
 export type AuditLogRow = {
   id: string;
+  organization_id?: string;
   timestamp: string;
   user: string;
   action: string;
@@ -216,6 +239,8 @@ export type AuditLogRow = {
 
 export type NotificationRow = {
   id: string;
+  organization_id?: string;
+  user_id?: string | null;
   title: string;
   message: string;
   type: string;
@@ -272,6 +297,16 @@ export type EmiPaymentRow = {
 export type Database = {
   public: {
     Tables: {
+      organizations: {
+        Row: OrganizationRow;
+        Insert: Omit<OrganizationRow, 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<OrganizationRow>;
+        Relationships: [];
+      };
       profiles: {
         Row: ProfileRow;
         Insert: Partial<ProfileRow> & { id: string; full_name: string; email: string };

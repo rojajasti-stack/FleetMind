@@ -23,11 +23,15 @@ export function useFleetData() {
     fuelRecords: fleetStore.fuelRecords,
     expenses: fleetStore.expenses,
     loans: fleetStore.loans,
+    emiPayments: fleetStore.emiPayments,
     gpsVehicles: fleetStore.gpsVehicles,
     notifications: fleetStore.notifications,
     auditLogs: fleetStore.auditLogs,
     profile: fleetStore.profile,
+    organization: fleetStore.organization,
     settings: fleetStore.settings,
+    dbError: fleetStore.dbError,
+    isLoadingDb: fleetStore.isLoadingDb,
     lastUpdated: fleetStore.lastUpdated,
 
     // Actions
@@ -39,6 +43,10 @@ export function useFleetData() {
     addDriver: fleetStore.addDriver.bind(fleetStore),
     updateDriver: fleetStore.updateDriver.bind(fleetStore),
     deleteDriver: fleetStore.deleteDriver.bind(fleetStore),
+
+    addMechanic: fleetStore.addMechanic.bind(fleetStore),
+    updateMechanic: fleetStore.updateMechanic.bind(fleetStore),
+    deleteMechanic: fleetStore.deleteMechanic.bind(fleetStore),
 
     addServiceRecord: fleetStore.addServiceRecord.bind(fleetStore),
     updateServiceRecord: fleetStore.updateServiceRecord.bind(fleetStore),
@@ -67,7 +75,9 @@ export function useFleetData() {
 
     addLoan: fleetStore.addLoan.bind(fleetStore),
     updateLoan: fleetStore.updateLoan.bind(fleetStore),
+    deleteLoan: fleetStore.deleteLoan.bind(fleetStore),
     recordEmiPayment: fleetStore.recordEmiPayment.bind(fleetStore),
+    updateGpsVehicle: fleetStore.updateGpsVehicle.bind(fleetStore),
 
     markNotificationAsRead: fleetStore.markNotificationAsRead.bind(fleetStore),
     markAllNotificationsAsRead: fleetStore.markAllNotificationsAsRead.bind(fleetStore),

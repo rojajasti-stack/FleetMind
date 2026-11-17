@@ -1,6 +1,6 @@
 import {
   Bus, Driver, Mechanic, ServiceRecord, InventoryItem, InventoryMovement,
-  Route, Trip, FuelRecord, Expense, EmiLoan, GpsVehicle,
+  Route, Trip, FuelRecord, Expense, EmiLoan, EmiPayment, GpsVehicle,
   NotificationItem, AuditLog, UserProfile, SystemSettings
 } from '../types';
 import { calculateEmi } from '../utils/formatters';
@@ -1158,6 +1158,22 @@ function loadFromStorage<T>(key: string, fallback: T): T {
   }
 }
 
+export function isUuid(id?: string | null): boolean {
+  if (!id) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+}
+
+export function generateEntityId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 function saveToStorage<T>(key: string, data: T): void {
   try {
     localStorage.setItem(currentStoragePrefix + key, JSON.stringify(data));
@@ -1172,33 +1188,38 @@ class FleetStore {
 
   currentUserId: string | null = initialAuthOnLoad ? initialAuthOnLoad.id : null;
   currentUserEmail: string | null = initialAuthOnLoad ? (initialAuthOnLoad.email || null) : null;
+  currentOrgId: string = initialAuthOnLoad ? '' : '00000000-0000-0000-0000-000000000001';
   isDemoMode: boolean = !initialAuthOnLoad;
+  organization: { id: string; name: string; slug: string; billing_tier: string } | null = null;
+  dbError: string | null = null;
+  isLoadingDb: boolean = false;
 
-  buses: Bus[] = loadFromStorage('buses', initialAuthOnLoad ? [] : INITIAL_BUSES);
-  drivers: Driver[] = loadFromStorage('drivers', initialAuthOnLoad ? [] : INITIAL_DRIVERS);
-  mechanics: Mechanic[] = loadFromStorage('mechanics', initialAuthOnLoad ? [] : INITIAL_MECHANICS);
-  serviceRecords: ServiceRecord[] = loadFromStorage('serviceRecords', initialAuthOnLoad ? [] : INITIAL_SERVICE_RECORDS);
-  inventory: InventoryItem[] = loadFromStorage('inventory', initialAuthOnLoad ? [] : INITIAL_INVENTORY);
-  inventoryMovements: InventoryMovement[] = loadFromStorage('inventoryMovements', initialAuthOnLoad ? [] : INITIAL_INVENTORY_MOVEMENTS);
-  routes: Route[] = loadFromStorage('routes', initialAuthOnLoad ? [] : INITIAL_ROUTES);
-  trips: Trip[] = loadFromStorage('trips', initialAuthOnLoad ? [] : INITIAL_TRIPS);
-  fuelRecords: FuelRecord[] = loadFromStorage('fuelRecords', initialAuthOnLoad ? [] : INITIAL_FUEL_RECORDS);
-  expenses: Expense[] = loadFromStorage('expenses', initialAuthOnLoad ? [] : INITIAL_EXPENSES);
-  loans: EmiLoan[] = loadFromStorage('loans', initialAuthOnLoad ? [] : INITIAL_LOANS);
-  gpsVehicles: GpsVehicle[] = loadFromStorage('gpsVehicles', initialAuthOnLoad ? [] : INITIAL_GPS_VEHICLES);
-  notifications: NotificationItem[] = loadFromStorage('notifications', initialAuthOnLoad ? [] : INITIAL_NOTIFICATIONS);
-  auditLogs: AuditLog[] = loadFromStorage('auditLogs', initialAuthOnLoad ? [] : INITIAL_AUDIT_LOGS);
-  profile: UserProfile = loadFromStorage('profile', initialAuthOnLoad ? {
+  buses: Bus[] = [];
+  drivers: Driver[] = [];
+  mechanics: Mechanic[] = [];
+  serviceRecords: ServiceRecord[] = [];
+  inventory: InventoryItem[] = [];
+  inventoryMovements: InventoryMovement[] = [];
+  routes: Route[] = [];
+  trips: Trip[] = [];
+  fuelRecords: FuelRecord[] = [];
+  expenses: Expense[] = [];
+  loans: EmiLoan[] = [];
+  emiPayments: EmiPayment[] = [];
+  gpsVehicles: GpsVehicle[] = [];
+  notifications: NotificationItem[] = [];
+  auditLogs: AuditLog[] = [];
+  profile: UserProfile = initialAuthOnLoad ? {
     id: initialAuthOnLoad.id,
     full_name: initialAuthOnLoad.full_name || formatNameFromEmail(initialAuthOnLoad.email || ''),
     email: initialAuthOnLoad.email || '',
     phone: '',
     job_title: 'Director of Fleet Operations',
     company_name: 'FleetMind Logistics',
-    role: 'Super Admin'
-  } : INITIAL_PROFILE);
-  settings: SystemSettings = loadFromStorage('settings', INITIAL_SETTINGS);
-  lastUpdated: string = loadFromStorage('last_updated', new Date().toISOString());
+    role: 'Normal User'
+  } : INITIAL_PROFILE;
+  settings: SystemSettings = INITIAL_SETTINGS;
+  lastUpdated: string = new Date().toISOString();
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -1221,9 +1242,10 @@ class FleetStore {
       this.currentUserEmail = userEmail || null;
       this.isDemoMode = false;
       currentStoragePrefix = `fleetmind_user_${userId}_`;
+      this.currentOrgId = customProfile?.organization_id || '';
 
       const resolvedName = customProfile?.full_name || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Manager');
-      const resolvedRole = customProfile?.role || 'Super Admin';
+      const resolvedRole = customProfile?.role || 'Normal User';
 
       this.profile = loadFromStorage('profile', {
         id: userId,
@@ -1232,53 +1254,86 @@ class FleetStore {
         phone: customProfile?.phone || '',
         job_title: customProfile?.job_title || 'Director of Fleet Operations',
         company_name: customProfile?.company_name || 'FleetMind Logistics',
-        role: resolvedRole
+        role: resolvedRole,
+        organization_id: this.currentOrgId
       });
 
-      this.buses = loadFromStorage('buses', []);
-      this.drivers = loadFromStorage('drivers', []);
-      this.mechanics = loadFromStorage('mechanics', []);
-      this.serviceRecords = loadFromStorage('serviceRecords', []);
-      this.inventory = loadFromStorage('inventory', []);
-      this.inventoryMovements = loadFromStorage('inventoryMovements', []);
-      this.routes = loadFromStorage('routes', []);
-      this.trips = loadFromStorage('trips', []);
-      this.fuelRecords = loadFromStorage('fuelRecords', []);
-      this.expenses = loadFromStorage('expenses', []);
-      this.loans = loadFromStorage('loans', []);
-      this.gpsVehicles = loadFromStorage('gpsVehicles', []);
-      this.notifications = loadFromStorage('notifications', []);
-      this.auditLogs = loadFromStorage('auditLogs', []);
+      // Immediately reset all in-memory operational state to empty arrays for authenticated accounts
+      this.buses = [];
+      this.drivers = [];
+      this.mechanics = [];
+      this.serviceRecords = [];
+      this.inventory = [];
+      this.inventoryMovements = [];
+      this.routes = [];
+      this.trips = [];
+      this.fuelRecords = [];
+      this.expenses = [];
+      this.loans = [];
+      this.emiPayments = [];
+      this.gpsVehicles = [];
+      this.notifications = [];
+      this.auditLogs = [];
       this.settings = loadFromStorage('settings', {
         ...INITIAL_SETTINGS,
         company_name: this.profile.company_name || 'FleetMind Logistics'
       });
 
       saveToStorage('profile', this.profile);
+      this.isLoadingDb = true;
       this.syncFromSupabase();
     } else {
       this.currentUserId = null;
       this.currentUserEmail = null;
-      this.isDemoMode = true;
-      currentStoragePrefix = 'fleetmind_demo_';
+      this.isDemoMode = false;
+      currentStoragePrefix = 'fleetmind_guest_';
+      this.currentOrgId = '';
 
-      this.buses = loadFromStorage('buses', INITIAL_BUSES);
-      this.drivers = loadFromStorage('drivers', INITIAL_DRIVERS);
-      this.mechanics = loadFromStorage('mechanics', INITIAL_MECHANICS);
-      this.serviceRecords = loadFromStorage('serviceRecords', INITIAL_SERVICE_RECORDS);
-      this.inventory = loadFromStorage('inventory', INITIAL_INVENTORY);
-      this.inventoryMovements = loadFromStorage('inventoryMovements', INITIAL_INVENTORY_MOVEMENTS);
-      this.routes = loadFromStorage('routes', INITIAL_ROUTES);
-      this.trips = loadFromStorage('trips', INITIAL_TRIPS);
-      this.fuelRecords = loadFromStorage('fuelRecords', INITIAL_FUEL_RECORDS);
-      this.expenses = loadFromStorage('expenses', INITIAL_EXPENSES);
-      this.loans = loadFromStorage('loans', INITIAL_LOANS);
-      this.gpsVehicles = loadFromStorage('gpsVehicles', INITIAL_GPS_VEHICLES);
-      this.notifications = loadFromStorage('notifications', INITIAL_NOTIFICATIONS);
-      this.auditLogs = loadFromStorage('auditLogs', INITIAL_AUDIT_LOGS);
-      this.profile = loadFromStorage('profile', INITIAL_PROFILE);
-      this.settings = loadFromStorage('settings', INITIAL_SETTINGS);
+      this.buses = [];
+      this.drivers = [];
+      this.mechanics = [];
+      this.serviceRecords = [];
+      this.inventory = [];
+      this.inventoryMovements = [];
+      this.routes = [];
+      this.trips = [];
+      this.fuelRecords = [];
+      this.expenses = [];
+      this.loans = [];
+      this.emiPayments = [];
+      this.gpsVehicles = [];
+      this.notifications = [];
+      this.auditLogs = [];
+      this.profile = INITIAL_PROFILE;
+      this.settings = INITIAL_SETTINGS;
     }
+    this.notify();
+  }
+
+  loadDemoData(): void {
+    this.currentUserId = null;
+    this.currentUserEmail = null;
+    this.isDemoMode = true;
+    currentStoragePrefix = 'fleetmind_demo_';
+    this.currentOrgId = '00000000-0000-0000-0000-000000000001';
+
+    this.buses = loadFromStorage('buses', INITIAL_BUSES);
+    this.drivers = loadFromStorage('drivers', INITIAL_DRIVERS);
+    this.mechanics = loadFromStorage('mechanics', INITIAL_MECHANICS);
+    this.serviceRecords = loadFromStorage('serviceRecords', INITIAL_SERVICE_RECORDS);
+    this.inventory = loadFromStorage('inventory', INITIAL_INVENTORY);
+    this.inventoryMovements = loadFromStorage('inventoryMovements', INITIAL_INVENTORY_MOVEMENTS);
+    this.routes = loadFromStorage('routes', INITIAL_ROUTES);
+    this.trips = loadFromStorage('trips', INITIAL_TRIPS);
+    this.fuelRecords = loadFromStorage('fuelRecords', INITIAL_FUEL_RECORDS);
+    this.expenses = loadFromStorage('expenses', INITIAL_EXPENSES);
+    this.loans = loadFromStorage('loans', INITIAL_LOANS);
+    this.emiPayments = loadFromStorage('emiPayments', []);
+    this.gpsVehicles = loadFromStorage('gpsVehicles', INITIAL_GPS_VEHICLES);
+    this.notifications = loadFromStorage('notifications', INITIAL_NOTIFICATIONS);
+    this.auditLogs = loadFromStorage('auditLogs', INITIAL_AUDIT_LOGS);
+    this.profile = loadFromStorage('profile', INITIAL_PROFILE);
+    this.settings = loadFromStorage('settings', INITIAL_SETTINGS);
     this.notify();
   }
 
@@ -1440,11 +1495,93 @@ class FleetStore {
     this.notify();
   }
 
+  handleDbError(context: string, error: any) {
+    if (!error) return;
+    const isRls = error.code === '42501' ||
+      (typeof error.message === 'string' && (
+        error.message.includes('violates row-level security policy') ||
+        error.message.includes('permission denied')
+      ));
+
+    const msg = isRls
+      ? `Permission Denied [${context}]: Your account role (${this.profile.role}) is not authorized for this operation under PostgreSQL security policies.`
+      : `Database Notice [${context}]: ${error.message || 'Operation failed'}`;
+
+    console.warn(`[Supabase Database] ${msg}`);
+    this.dbError = msg;
+
+    if (this.currentUserId && !this.isDemoMode) {
+      this.addNotification(
+        isRls ? 'Security Policy Violation' : 'Database Error',
+        msg,
+        'system',
+        isRls ? 'warning' : 'critical'
+      );
+    }
+  }
+
   async syncFromSupabase() {
-    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) {
+      this.isLoadingDb = false;
+      return;
+    }
+    this.isLoadingDb = true;
+
     try {
-      const { data: busesData, error: busesErr } = await supabase.from('buses').select('*');
-      if (!busesErr && busesData && busesData.length > 0) {
+      // 1. Organization info
+      try {
+        const { data: orgData, error: orgErr } = await (supabase.from('organizations') as any)
+          .select('*')
+          .limit(1)
+          .maybeSingle();
+        if (!orgErr && orgData) {
+          this.organization = {
+            id: orgData.id,
+            name: orgData.name,
+            slug: orgData.slug,
+            billing_tier: orgData.billing_tier
+          };
+          if (orgData.id) this.currentOrgId = orgData.id;
+        }
+      } catch (e) {
+        console.warn('[Sync] Organizations check notice:', e);
+      }
+
+      // 2. Profile
+      try {
+        const { data: profData, error: profErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', this.currentUserId)
+          .maybeSingle();
+        if (!profErr && profData) {
+          this.profile = {
+            id: profData.id,
+            full_name: profData.full_name,
+            email: profData.email,
+            phone: profData.phone || '',
+            job_title: profData.job_title || 'Fleet Operator',
+            company_name: profData.company_name || 'FleetMind Logistics',
+            avatar_url: profData.avatar_url || undefined,
+            role: (profData.role as UserProfile['role']) || 'Normal User',
+            organization_id: (profData as any).organization_id || this.currentOrgId
+          };
+          if ((profData as any).organization_id) {
+            this.currentOrgId = (profData as any).organization_id;
+          }
+          saveToStorage('profile', this.profile);
+        }
+      } catch (e) {
+        console.warn('[Sync] Profile check notice:', e);
+      }
+
+      // 3. Buses
+      let busesQuery = supabase.from('buses').select('*');
+      if (this.currentOrgId) {
+        busesQuery = busesQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: busesData, error: busesErr } = await busesQuery.order('created_at', { ascending: false });
+      if (!busesErr && busesData) {
         this.buses = busesData.map(b => ({
           id: b.id,
           bus_number: b.bus_number,
@@ -1467,10 +1604,19 @@ class FleetStore {
           updated_at: b.updated_at
         }));
         saveToStorage('buses', this.buses);
+      } else if (busesErr) {
+        this.handleDbError('buses', busesErr);
+        this.buses = [];
+        saveToStorage('buses', []);
       }
 
-      const { data: driversData, error: driversErr } = await supabase.from('drivers').select('*');
-      if (!driversErr && driversData && driversData.length > 0) {
+      // 4. Drivers
+      let driversQuery = supabase.from('drivers').select('*');
+      if (this.currentOrgId) {
+        driversQuery = driversQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: driversData, error: driversErr } = await driversQuery.order('created_at', { ascending: false });
+      if (!driversErr && driversData) {
         this.drivers = driversData.map(d => ({
           id: d.id,
           name: d.name,
@@ -1487,13 +1633,47 @@ class FleetStore {
           distance_km: d.distance_km || 0,
           safety_score: d.safety_score || 95,
           profile_photo: d.profile_photo || undefined,
-          emergency_contact: d.emergency_contact || undefined
+          emergency_contact: d.emergency_contact || undefined,
+          created_at: d.created_at,
+          updated_at: d.updated_at
         }));
         saveToStorage('drivers', this.drivers);
+      } else if (driversErr) {
+        this.handleDbError('drivers', driversErr);
+        this.drivers = [];
+        saveToStorage('drivers', []);
       }
 
-      const { data: routesData, error: routesErr } = await supabase.from('routes').select('*');
-      if (!routesErr && routesData && routesData.length > 0) {
+      // 5. Mechanics
+      let mechanicsQuery = supabase.from('mechanics').select('*');
+      if (this.currentOrgId) {
+        mechanicsQuery = mechanicsQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: mechanicsData, error: mechanicsErr } = await mechanicsQuery.order('created_at', { ascending: false });
+      if (!mechanicsErr && mechanicsData) {
+        this.mechanics = mechanicsData.map(m => ({
+          id: m.id,
+          name: m.name,
+          phone: m.phone,
+          specialty: m.specialty,
+          status: m.status as any,
+          active_tasks: m.active_tasks || 0,
+          hourly_rate: Number(m.hourly_rate) || 0
+        }));
+        saveToStorage('mechanics', this.mechanics);
+      } else if (mechanicsErr) {
+        this.handleDbError('mechanics', mechanicsErr);
+        this.mechanics = [];
+        saveToStorage('mechanics', []);
+      }
+
+      // 6. Routes
+      let routesQuery = supabase.from('routes').select('*');
+      if (this.currentOrgId) {
+        routesQuery = routesQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: routesData, error: routesErr } = await routesQuery.order('created_at', { ascending: false });
+      if (!routesErr && routesData) {
         this.routes = routesData.map(r => ({
           id: r.id,
           route_name: r.route_name,
@@ -1502,78 +1682,376 @@ class FleetStore {
           end_point: r.end_point,
           distance_km: r.distance_km,
           estimated_time: r.estimated_time,
-          fare: r.fare,
+          fare: Number(r.fare),
           assigned_buses: r.assigned_buses || [],
           assigned_drivers: r.assigned_drivers || [],
           stops: r.stops || [],
-          status: r.status as any
+          status: r.status as any,
+          created_at: r.created_at
         }));
         saveToStorage('routes', this.routes);
+      } else if (routesErr) {
+        this.handleDbError('routes', routesErr);
+        this.routes = [];
+        saveToStorage('routes', []);
       }
 
-      const { data: tripsData, error: tripsErr } = await supabase.from('trips').select('*');
-      if (!tripsErr && tripsData && tripsData.length > 0) {
-        this.trips = tripsData;
-        saveToStorage('trips', this.trips);
+      // 7. Trips
+      let tripsQuery = supabase.from('trips').select('*');
+      if (this.currentOrgId) {
+        tripsQuery = tripsQuery.eq('organization_id', this.currentOrgId);
       }
-
-      const { data: fuelData, error: fuelErr } = await supabase.from('fuel_records').select('*');
-      if (!fuelErr && fuelData && fuelData.length > 0) {
-        this.fuelRecords = fuelData.map((f: any) => ({
-          ...f,
-          receipt_number: f.receipt_number || undefined,
-          notes: f.notes || undefined,
-          calculated_efficiency: f.calculated_efficiency || undefined
+      const { data: tripsData, error: tripsErr } = await tripsQuery.order('date', { ascending: false });
+      if (!tripsErr && tripsData) {
+        this.trips = tripsData.map(t => ({
+          id: t.id,
+          trip_code: t.trip_code,
+          route_id: t.route_id,
+          route_name: t.route_name,
+          bus_id: t.bus_id,
+          bus_number: t.bus_number,
+          driver_id: t.driver_id,
+          driver_name: t.driver_name,
+          date: t.date,
+          start_time: t.start_time,
+          end_time: t.end_time,
+          start_point: t.start_point,
+          end_point: t.end_point,
+          fare: Number(t.fare) || 0,
+          passenger_count: t.passenger_count || 0,
+          status: t.status as any,
+          created_at: t.created_at
         }));
-        saveToStorage('fuelRecords', this.fuelRecords);
+        saveToStorage('trips', this.trips);
+      } else if (tripsErr) {
+        this.handleDbError('trips', tripsErr);
+        this.trips = [];
+        saveToStorage('trips', []);
       }
 
-      const { data: srvData, error: srvErr } = await supabase.from('service_records').select('*');
-      if (!srvErr && srvData && srvData.length > 0) {
+      // 8. Service Records (Maintenance)
+      let srvQuery = supabase.from('service_records').select('*');
+      if (this.currentOrgId) {
+        srvQuery = srvQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: srvData, error: srvErr } = await srvQuery.order('service_date', { ascending: false });
+      if (!srvErr && srvData) {
         this.serviceRecords = srvData.map((s: any) => ({
-          ...s,
-          service_type: s.service_type as any
+          id: s.id,
+          bus_number: s.bus_number,
+          service_type: s.service_type as any,
+          service_date: s.service_date,
+          cost: Number(s.cost) || 0,
+          parts_used: s.parts_used || '',
+          mechanic_notes: s.mechanic_notes || '',
+          next_service_prediction: s.next_service_prediction || '',
+          mechanic_name: s.mechanic_name || 'Fleet Mechanic',
+          priority: s.priority as any,
+          status: s.status as any,
+          created_at: s.created_at
         }));
         saveToStorage('serviceRecords', this.serviceRecords);
+      } else if (srvErr) {
+        this.handleDbError('service_records', srvErr);
+        this.serviceRecords = [];
+        saveToStorage('serviceRecords', []);
       }
 
-      const { data: expData, error: expErr } = await supabase.from('expenses').select('*');
-      if (!expErr && expData && expData.length > 0) {
+      // 9. Inventory
+      let invQuery = supabase.from('inventory').select('*');
+      if (this.currentOrgId) {
+        invQuery = invQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: invData, error: invErr } = await invQuery.order('item_name');
+      if (!invErr && invData) {
+        this.inventory = invData.map((i: any) => ({
+          id: i.id,
+          item_name: i.item_name,
+          sku: i.sku,
+          category: i.category as any,
+          current_stock: Number(i.current_stock) || 0,
+          minimum_stock: Number(i.minimum_stock) || 0,
+          purchase_price: Number(i.purchase_price) || 0,
+          vendor: i.vendor,
+          unit: i.unit || 'Pcs',
+          storage_location: i.storage_location || 'Main Warehouse',
+          last_updated: i.last_updated
+        }));
+        saveToStorage('inventory', this.inventory);
+      } else if (invErr) {
+        this.handleDbError('inventory', invErr);
+        this.inventory = [];
+        saveToStorage('inventory', []);
+      }
+
+      // 10. Inventory Movements
+      let movQuery = supabase.from('inventory_movements').select('*');
+      if (this.currentOrgId) {
+        movQuery = movQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: movData, error: movErr } = await movQuery.order('created_at', { ascending: false });
+      if (!movErr && movData) {
+        this.inventoryMovements = movData.map((m: any) => ({
+          id: m.id,
+          item_id: m.item_id,
+          item_name: m.item_name,
+          type: m.type as any,
+          quantity: Number(m.quantity) || 0,
+          bus_number: m.bus_number || undefined,
+          date: m.date,
+          notes: m.notes || ''
+        }));
+        saveToStorage('inventoryMovements', this.inventoryMovements);
+      } else if (movErr) {
+        this.handleDbError('inventory_movements', movErr);
+        this.inventoryMovements = [];
+        saveToStorage('inventoryMovements', []);
+      }
+
+      // 11. Fuel Records
+      let fuelQuery = supabase.from('fuel_records').select('*');
+      if (this.currentOrgId) {
+        fuelQuery = fuelQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: fuelData, error: fuelErr } = await fuelQuery.order('date', { ascending: false });
+      if (!fuelErr && fuelData) {
+        this.fuelRecords = fuelData.map((f: any) => ({
+          id: f.id,
+          bus_number: f.bus_number,
+          date: f.date,
+          liters: Number(f.liters),
+          amount: Number(f.amount),
+          price_per_liter: Number(f.price_per_liter),
+          odometer_reading: Number(f.odometer_reading) || 0,
+          fuel_station: f.fuel_station,
+          driver_name: f.driver_name,
+          receipt_number: f.receipt_number || undefined,
+          notes: f.notes || undefined,
+          calculated_efficiency: f.calculated_efficiency ? Number(f.calculated_efficiency) : undefined,
+          created_at: f.created_at
+        }));
+        saveToStorage('fuelRecords', this.fuelRecords);
+      } else if (fuelErr) {
+        this.handleDbError('fuel_records', fuelErr);
+        this.fuelRecords = [];
+        saveToStorage('fuelRecords', []);
+      }
+
+      // 12. Expenses (Financial Ledger)
+      let expQuery = supabase.from('expenses').select('*');
+      if (this.currentOrgId) {
+        expQuery = expQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: expData, error: expErr } = await expQuery.order('date', { ascending: false });
+      if (!expErr && expData) {
         this.expenses = expData.map((e: any) => ({
-          ...e,
-          category: e.category as any
+          id: e.id,
+          category: e.category as any,
+          type: e.type as any,
+          amount: Number(e.amount),
+          date: e.date,
+          description: e.description,
+          bus_number: e.bus_number || undefined,
+          payment_method: e.payment_method as any,
+          reference_number: e.reference_number || undefined,
+          created_at: e.created_at
         }));
         saveToStorage('expenses', this.expenses);
+      } else if (expErr) {
+        if (expErr.code !== '42501') this.handleDbError('expenses', expErr);
+        this.expenses = [];
+        saveToStorage('expenses', []);
       }
 
+      // 13. EMI Loans
+      let loanQuery = supabase.from('loans').select('*');
+      if (this.currentOrgId) {
+        loanQuery = loanQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: loanData, error: loanErr } = await loanQuery.order('created_at', { ascending: false });
+      if (!loanErr && loanData) {
+        this.loans = loanData.map((l: any) => ({
+          id: l.id,
+          loan_id: l.loan_id,
+          lender: l.lender,
+          bus_number: l.bus_number,
+          principal_amount: Number(l.principal_amount),
+          interest_rate: Number(l.interest_rate),
+          loan_start_date: l.loan_start_date,
+          term_months: Number(l.term_months),
+          monthly_emi: Number(l.monthly_emi),
+          total_paid: Number(l.total_paid) || 0,
+          outstanding_balance: Number(l.outstanding_balance),
+          next_due_date: l.next_due_date,
+          status: l.status as any,
+          installments_paid: Number(l.installments_paid) || 0,
+          installments_total: Number(l.installments_total)
+        }));
+        saveToStorage('loans', this.loans);
+      } else if (loanErr) {
+        if (loanErr.code !== '42501') this.handleDbError('loans', loanErr);
+        this.loans = [];
+        saveToStorage('loans', []);
+      }
+
+      // 14. EMI Payments
+      let pmtQuery = supabase.from('emi_payments').select('*');
+      if (this.currentOrgId) {
+        pmtQuery = pmtQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: pmtData, error: pmtErr } = await pmtQuery.order('payment_date', { ascending: false });
+      if (!pmtErr && pmtData) {
+        this.emiPayments = pmtData.map((p: any) => ({
+          id: p.id,
+          loan_id: p.loan_id,
+          installment_number: Number(p.installment_number),
+          due_date: p.due_date,
+          payment_date: p.payment_date,
+          amount: Number(p.amount),
+          status: p.status as any,
+          reference: p.reference || undefined
+        }));
+        saveToStorage('emiPayments', this.emiPayments);
+      } else if (pmtErr) {
+        if (pmtErr.code !== '42501') this.handleDbError('emi_payments', pmtErr);
+        this.emiPayments = [];
+        saveToStorage('emiPayments', []);
+      }
+
+      // 15. GPS Vehicles (Isolated to user's buses)
+      const userBusNumbers = new Set(this.buses.map(b => b.bus_number));
+      const userBusIds = new Set(this.buses.map(b => b.id));
+      const { data: gpsData, error: gpsErr } = await supabase
+        .from('gps_vehicles')
+        .select('*');
+      if (!gpsErr && gpsData) {
+        // Only include GPS telemetry for buses that belong to this organization
+        const orgGpsData = this.buses.length > 0
+          ? gpsData.filter((g: any) => userBusNumbers.has(g.bus_number) || userBusIds.has(g.bus_id))
+          : [];
+        this.gpsVehicles = orgGpsData.map((g: any) => {
+          const matchedBus = this.buses.find(b => b.id === g.bus_id || b.bus_number === g.bus_number);
+          return {
+            bus_id: g.bus_id,
+            bus_number: g.bus_number,
+            model: matchedBus?.model || 'Commercial Coach',
+            driver_name: matchedBus?.assigned_driver || 'Assigned Driver',
+            lat: Number(g.lat),
+            lng: Number(g.lng),
+            speed: Number(g.speed),
+            heading: Number(g.heading) || 0,
+            status: g.status as any,
+            battery_level: Number(g.battery_level) || 100,
+            fuel_level: Number(g.fuel_level) || 100,
+            last_updated: g.last_updated,
+            current_route: g.current_route || undefined,
+            destination: g.destination || undefined
+          };
+        });
+        saveToStorage('gpsVehicles', this.gpsVehicles);
+      } else if (gpsErr) {
+        this.handleDbError('gps_vehicles', gpsErr);
+        this.gpsVehicles = [];
+        saveToStorage('gpsVehicles', []);
+      }
+
+      // 16. Notifications
+      let notifQuery = supabase.from('notifications').select('*');
+      if (this.currentOrgId) {
+        notifQuery = notifQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: notifData, error: notifErr } = await notifQuery.order('date', { ascending: false });
+      if (!notifErr && notifData) {
+        this.notifications = notifData.map((n: any) => ({
+          id: n.id,
+          title: n.title,
+          message: n.message,
+          type: n.type as any,
+          severity: n.severity as any,
+          read: Boolean(n.read),
+          date: n.date,
+          link: n.link || undefined
+        }));
+        saveToStorage('notifications', this.notifications);
+      } else if (notifErr) {
+        this.handleDbError('notifications', notifErr);
+        this.notifications = [];
+        saveToStorage('notifications', []);
+      }
+
+      // 17. Audit Logs
+      let auditQuery = supabase.from('audit_logs').select('*');
+      if (this.currentOrgId) {
+        auditQuery = auditQuery.eq('organization_id', this.currentOrgId);
+      }
+      const { data: auditData, error: auditErr } = await auditQuery.order('timestamp', { ascending: false }).limit(100);
+      if (!auditErr && auditData) {
+        this.auditLogs = auditData.map((a: any) => ({
+          id: a.id,
+          timestamp: a.timestamp,
+          user: a.user_name || 'Fleet Operator',
+          action: a.action,
+          entity_type: a.entity_type,
+          entity_id: a.entity_id,
+          details: a.details
+        }));
+        saveToStorage('auditLogs', this.auditLogs);
+      } else if (auditErr) {
+        if (auditErr.code !== '42501') {
+          this.handleDbError('audit_logs', auditErr);
+        }
+        this.auditLogs = [];
+        saveToStorage('auditLogs', []);
+      }
+
+      // 18. Settings
+      const { data: settData, error: settErr } = await supabase
+        .from('settings')
+        .select('*')
+        .limit(1)
+        .maybeSingle();
+      if (!settErr && settData) {
+        this.settings = {
+          company_name: settData.company_name,
+          currency: settData.currency,
+          currency_symbol: settData.currency_symbol,
+          timezone: settData.timezone,
+          date_format: settData.date_format,
+          fuel_efficiency_alert_threshold: Number(settData.fuel_efficiency_alert_threshold),
+          maintenance_reminder_days: Number(settData.maintenance_reminder_days),
+          low_stock_warning_threshold: Number(settData.low_stock_warning_threshold),
+          notifications_email: Boolean(settData.notifications_email),
+          notifications_browser: Boolean(settData.notifications_browser)
+        };
+        saveToStorage('settings', this.settings);
+      } else if (settErr) {
+        this.handleDbError('settings', settErr);
+      }
+    } catch (err: any) {
+      console.warn('[Supabase Sync Exception]', err);
+    } finally {
+      this.isLoadingDb = false;
       this.notify();
-    } catch (err) {
-      console.warn('[Supabase Sync] Sync failed:', err);
     }
   }
+
+  // ============================================================================
+  // DATABASE SYNCHRONIZATION HELPERS (POSTGRES CRUD VIA SUPABASE CLIENT)
+  // ============================================================================
 
   async syncBusToSupabase(bus: Bus) {
     if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
     try {
-      let orgId = '00000000-0000-0000-0000-000000000001';
-      const { data: profileData } = await (supabase.from('profiles') as any)
-        .select('organization_id')
-        .eq('id', this.currentUserId)
-        .maybeSingle();
-      if (profileData?.organization_id) {
-        orgId = profileData.organization_id;
-      }
-
-      await (supabase.from('buses') as any).upsert({
+      const payload: any = {
         bus_number: bus.bus_number,
         registration_number: bus.registration_number,
         model: bus.model,
         manufacturer: bus.manufacturer,
-        year: bus.year,
-        capacity: bus.capacity,
+        year: Number(bus.year),
+        capacity: Number(bus.capacity),
         status: bus.status,
         fuel_type: bus.fuel_type,
-        odometer: bus.odometer,
+        odometer: Number(bus.odometer) || 0,
         assigned_driver: bus.assigned_driver || null,
         route: bus.route || null,
         insurance_expiry: bus.insurance_expiry,
@@ -1581,35 +2059,48 @@ class FleetStore {
         last_service_date: bus.last_service_date,
         next_service_date: bus.next_service_date,
         notes: bus.notes || null,
-        organization_id: orgId
-      }, { onConflict: 'organization_id,bus_number' });
-    } catch (err) {
-      console.warn('[Supabase Sync] Could not sync bus:', err);
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(bus.id)) payload.id = bus.id;
+
+      const { data, error } = await (supabase.from('buses') as any).upsert(payload, {
+        onConflict: 'organization_id,bus_number'
+      }).select().maybeSingle();
+
+      if (error) {
+        this.handleDbError('buses.upsert', error);
+      } else if (data?.id) {
+        const idx = this.buses.findIndex(b => b.bus_number === bus.bus_number);
+        if (idx !== -1 && this.buses[idx].id !== data.id) {
+          this.buses[idx].id = data.id;
+          saveToStorage('buses', this.buses);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('buses.sync', err);
     }
   }
 
-  async deleteBusFromSupabase(busNumber: string) {
+  async deleteBusFromSupabase(busIdOrNumber: string) {
     if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
     try {
-      await supabase.from('buses').delete().eq('bus_number', busNumber);
-    } catch (err) {
-      console.warn('[Supabase Sync] Could not delete bus:', err);
+      let query = supabase.from('buses').delete();
+      if (isUuid(busIdOrNumber)) {
+        query = query.eq('id', busIdOrNumber);
+      } else {
+        query = query.eq('bus_number', busIdOrNumber);
+      }
+      const { error } = await query;
+      if (error) this.handleDbError('buses.delete', error);
+    } catch (err: any) {
+      this.handleDbError('buses.delete', err);
     }
   }
 
   async syncDriverToSupabase(driver: Driver) {
     if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
     try {
-      let orgId = '00000000-0000-0000-0000-000000000001';
-      const { data: profileData } = await (supabase.from('profiles') as any)
-        .select('organization_id')
-        .eq('id', this.currentUserId)
-        .maybeSingle();
-      if (profileData?.organization_id) {
-        orgId = profileData.organization_id;
-      }
-
-      await (supabase.from('drivers') as any).upsert({
+      const payload: any = {
         name: driver.name,
         phone: driver.phone,
         email: driver.email,
@@ -1619,31 +2110,684 @@ class FleetStore {
         assigned_bus: driver.assigned_bus || null,
         status: driver.status,
         today_availability: driver.today_availability,
-        experience_years: driver.experience_years,
-        total_trips: driver.total_trips,
-        distance_km: driver.distance_km,
-        safety_score: driver.safety_score,
+        experience_years: Number(driver.experience_years) || 0,
+        total_trips: Number(driver.total_trips) || 0,
+        distance_km: Number(driver.distance_km) || 0,
+        safety_score: Number(driver.safety_score) || 95,
+        profile_photo: driver.profile_photo || null,
         emergency_contact: driver.emergency_contact || null,
-        organization_id: orgId
-      }, { onConflict: 'organization_id,license_number' });
-    } catch (err) {
-      console.warn('[Supabase Sync] Could not sync driver:', err);
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(driver.id)) payload.id = driver.id;
+
+      const { data, error } = await (supabase.from('drivers') as any).upsert(payload, {
+        onConflict: 'organization_id,license_number'
+      }).select().maybeSingle();
+
+      if (error) {
+        this.handleDbError('drivers.upsert', error);
+      } else if (data?.id) {
+        const idx = this.drivers.findIndex(d => d.license_number === driver.license_number);
+        if (idx !== -1 && this.drivers[idx].id !== data.id) {
+          this.drivers[idx].id = data.id;
+          saveToStorage('drivers', this.drivers);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('drivers.sync', err);
     }
   }
 
-  async deleteDriverFromSupabase(name: string) {
+  async deleteDriverFromSupabase(driverIdOrName: string) {
     if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
     try {
-      await supabase.from('drivers').delete().eq('name', name);
-    } catch (err) {
-      console.warn('[Supabase Sync] Could not delete driver:', err);
+      let query = supabase.from('drivers').delete();
+      if (isUuid(driverIdOrName)) {
+        query = query.eq('id', driverIdOrName);
+      } else {
+        query = query.eq('name', driverIdOrName);
+      }
+      const { error } = await query;
+      if (error) this.handleDbError('drivers.delete', error);
+    } catch (err: any) {
+      this.handleDbError('drivers.delete', err);
     }
   }
 
-  // Audit Log helper
+  async syncMechanicToSupabase(mechanic: Mechanic) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const payload: any = {
+        name: mechanic.name,
+        phone: mechanic.phone,
+        specialty: mechanic.specialty,
+        status: mechanic.status,
+        active_tasks: Number(mechanic.active_tasks) || 0,
+        hourly_rate: Number(mechanic.hourly_rate) || 0,
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(mechanic.id)) payload.id = mechanic.id;
+
+      const { data, error } = await (supabase.from('mechanics') as any).upsert(payload).select().maybeSingle();
+      if (error) {
+        this.handleDbError('mechanics.upsert', error);
+      } else if (data?.id) {
+        const idx = this.mechanics.findIndex(m => m.name === mechanic.name);
+        if (idx !== -1 && this.mechanics[idx].id !== data.id) {
+          this.mechanics[idx].id = data.id;
+          saveToStorage('mechanics', this.mechanics);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('mechanics.sync', err);
+    }
+  }
+
+  async deleteMechanicFromSupabase(id: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (isUuid(id)) {
+        const { error } = await supabase.from('mechanics').delete().eq('id', id);
+        if (error) this.handleDbError('mechanics.delete', error);
+      }
+    } catch (err: any) {
+      this.handleDbError('mechanics.delete', err);
+    }
+  }
+
+  async syncRouteToSupabase(route: Route) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const payload: any = {
+        route_name: route.route_name,
+        route_code: route.route_code,
+        start_point: route.start_point,
+        end_point: route.end_point,
+        distance_km: Number(route.distance_km),
+        estimated_time: route.estimated_time,
+        fare: Number(route.fare),
+        assigned_buses: route.assigned_buses || [],
+        assigned_drivers: route.assigned_drivers || [],
+        stops: route.stops || [],
+        status: route.status,
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(route.id)) payload.id = route.id;
+
+      const { data, error } = await (supabase.from('routes') as any).upsert(payload, {
+        onConflict: 'organization_id,route_code'
+      }).select().maybeSingle();
+
+      if (error) {
+        this.handleDbError('routes.upsert', error);
+      } else if (data?.id) {
+        const idx = this.routes.findIndex(r => r.route_code === route.route_code);
+        if (idx !== -1 && this.routes[idx].id !== data.id) {
+          this.routes[idx].id = data.id;
+          saveToStorage('routes', this.routes);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('routes.sync', err);
+    }
+  }
+
+  async deleteRouteFromSupabase(routeIdOrCode: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let query = supabase.from('routes').delete();
+      if (isUuid(routeIdOrCode)) {
+        query = query.eq('id', routeIdOrCode);
+      } else {
+        query = query.eq('route_code', routeIdOrCode);
+      }
+      const { error } = await query;
+      if (error) this.handleDbError('routes.delete', error);
+    } catch (err: any) {
+      this.handleDbError('routes.delete', err);
+    }
+  }
+
+  async syncTripToSupabase(trip: Trip) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let busId: string | null = null;
+      if (isUuid(trip.bus_id)) {
+        busId = trip.bus_id;
+      } else {
+        const matched = this.buses.find(b => b.bus_number === trip.bus_number);
+        if (matched && isUuid(matched.id)) busId = matched.id;
+      }
+
+      let routeId: string | null = null;
+      if (isUuid(trip.route_id)) {
+        routeId = trip.route_id;
+      } else {
+        const matched = this.routes.find(r => r.route_name === trip.route_name || r.route_code === trip.route_id);
+        if (matched && isUuid(matched.id)) routeId = matched.id;
+      }
+
+      let driverId: string | null = null;
+      if (isUuid(trip.driver_id)) {
+        driverId = trip.driver_id;
+      } else {
+        const matched = this.drivers.find(d => d.name === trip.driver_name);
+        if (matched && isUuid(matched.id)) driverId = matched.id;
+      }
+
+      const payload: any = {
+        trip_code: trip.trip_code,
+        route_name: trip.route_name,
+        bus_number: trip.bus_number,
+        driver_name: trip.driver_name,
+        date: trip.date,
+        start_time: trip.start_time.length === 5 ? `${trip.start_time}:00` : trip.start_time,
+        end_time: trip.end_time.length === 5 ? `${trip.end_time}:00` : trip.end_time,
+        start_point: trip.start_point,
+        end_point: trip.end_point,
+        fare: Number(trip.fare) || 0,
+        passenger_count: Number(trip.passenger_count) || 0,
+        status: trip.status,
+        organization_id: this.currentOrgId
+      };
+      if (busId) payload.bus_id = busId;
+      if (routeId) payload.route_id = routeId;
+      if (driverId) payload.driver_id = driverId;
+      if (isUuid(trip.id)) payload.id = trip.id;
+
+      const { data, error } = await (supabase.from('trips') as any).upsert(payload, {
+        onConflict: 'organization_id,trip_code'
+      }).select().maybeSingle();
+
+      if (error) {
+        this.handleDbError('trips.upsert', error);
+      } else if (data?.id) {
+        const idx = this.trips.findIndex(t => t.trip_code === trip.trip_code);
+        if (idx !== -1 && this.trips[idx].id !== data.id) {
+          this.trips[idx].id = data.id;
+          saveToStorage('trips', this.trips);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('trips.sync', err);
+    }
+  }
+
+  async deleteTripFromSupabase(tripIdOrCode: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let query = supabase.from('trips').delete();
+      if (isUuid(tripIdOrCode)) {
+        query = query.eq('id', tripIdOrCode);
+      } else {
+        query = query.eq('trip_code', tripIdOrCode);
+      }
+      const { error } = await query;
+      if (error) this.handleDbError('trips.delete', error);
+    } catch (err: any) {
+      this.handleDbError('trips.delete', err);
+    }
+  }
+
+  async syncServiceRecordToSupabase(record: ServiceRecord) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let busId: string | null = null;
+      const matched = this.buses.find(b => b.bus_number === record.bus_number);
+      if (matched && isUuid(matched.id)) busId = matched.id;
+
+      const payload: any = {
+        bus_number: record.bus_number,
+        service_type: record.service_type,
+        service_date: record.service_date,
+        cost: Number(record.cost) || 0,
+        parts_used: record.parts_used || '',
+        mechanic_notes: record.mechanic_notes || '',
+        next_service_prediction: record.next_service_prediction || null,
+        mechanic_name: record.mechanic_name || 'Fleet Mechanic',
+        priority: record.priority || 'medium',
+        status: record.status || 'scheduled',
+        organization_id: this.currentOrgId
+      };
+      if (busId) payload.bus_id = busId;
+      if (isUuid(record.id)) payload.id = record.id;
+
+      const { data, error } = await (supabase.from('service_records') as any).upsert(payload).select().maybeSingle();
+      if (error) {
+        this.handleDbError('service_records.upsert', error);
+      } else if (data?.id) {
+        const idx = this.serviceRecords.findIndex(s => s.id === record.id);
+        if (idx !== -1 && this.serviceRecords[idx].id !== data.id) {
+          this.serviceRecords[idx].id = data.id;
+          saveToStorage('serviceRecords', this.serviceRecords);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('service_records.sync', err);
+    }
+  }
+
+  async deleteServiceRecordFromSupabase(id: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (isUuid(id)) {
+        const { error } = await supabase.from('service_records').delete().eq('id', id);
+        if (error) this.handleDbError('service_records.delete', error);
+      }
+    } catch (err: any) {
+      this.handleDbError('service_records.delete', err);
+    }
+  }
+
+  async syncInventoryItemToSupabase(item: InventoryItem) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const payload: any = {
+        item_name: item.item_name,
+        sku: item.sku,
+        category: item.category,
+        current_stock: Number(item.current_stock) || 0,
+        minimum_stock: Number(item.minimum_stock) || 0,
+        purchase_price: Number(item.purchase_price) || 0,
+        vendor: item.vendor,
+        unit: item.unit || 'Pcs',
+        storage_location: item.storage_location || 'Main Warehouse',
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(item.id)) payload.id = item.id;
+
+      const { data, error } = await (supabase.from('inventory') as any).upsert(payload, {
+        onConflict: 'organization_id,sku'
+      }).select().maybeSingle();
+
+      if (error) {
+        this.handleDbError('inventory.upsert', error);
+      } else if (data?.id) {
+        const idx = this.inventory.findIndex(i => i.sku === item.sku);
+        if (idx !== -1 && this.inventory[idx].id !== data.id) {
+          this.inventory[idx].id = data.id;
+          saveToStorage('inventory', this.inventory);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('inventory.sync', err);
+    }
+  }
+
+  async deleteInventoryItemFromSupabase(itemIdOrSku: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let query = supabase.from('inventory').delete();
+      if (isUuid(itemIdOrSku)) {
+        query = query.eq('id', itemIdOrSku);
+      } else {
+        query = query.eq('sku', itemIdOrSku);
+      }
+      const { error } = await query;
+      if (error) this.handleDbError('inventory.delete', error);
+    } catch (err: any) {
+      this.handleDbError('inventory.delete', err);
+    }
+  }
+
+  async syncInventoryMovementToSupabase(mov: InventoryMovement) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let itemId = mov.item_id;
+      if (!isUuid(itemId)) {
+        const matched = this.inventory.find(i => i.id === mov.item_id || i.item_name === mov.item_name);
+        if (matched && isUuid(matched.id)) itemId = matched.id;
+      }
+      if (!isUuid(itemId)) return;
+
+      const payload: any = {
+        item_id: itemId,
+        item_name: mov.item_name,
+        type: mov.type,
+        quantity: Number(mov.quantity),
+        bus_number: mov.bus_number || null,
+        date: mov.date,
+        notes: mov.notes || '',
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(mov.id)) payload.id = mov.id;
+
+      const { error } = await (supabase.from('inventory_movements') as any).insert(payload);
+      if (error) this.handleDbError('inventory_movements.insert', error);
+
+      // Sync stock update to inventory
+      const currentItem = this.inventory.find(i => i.id === mov.item_id);
+      if (currentItem && isUuid(currentItem.id)) {
+        await supabase.from('inventory').update({
+          current_stock: currentItem.current_stock,
+          last_updated: new Date().toISOString()
+        }).eq('id', currentItem.id);
+      }
+    } catch (err: any) {
+      this.handleDbError('inventory_movements.sync', err);
+    }
+  }
+
+  async syncFuelRecordToSupabase(record: FuelRecord) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let busId: string | null = null;
+      const matched = this.buses.find(b => b.bus_number === record.bus_number);
+      if (matched && isUuid(matched.id)) busId = matched.id;
+
+      const payload: any = {
+        bus_number: record.bus_number,
+        date: record.date,
+        liters: Number(record.liters),
+        amount: Number(record.amount),
+        price_per_liter: Number(record.price_per_liter),
+        odometer_reading: Number(record.odometer_reading) || 0,
+        fuel_station: record.fuel_station,
+        driver_name: record.driver_name,
+        receipt_number: record.receipt_number || null,
+        notes: record.notes || null,
+        calculated_efficiency: record.calculated_efficiency ? Number(record.calculated_efficiency) : null,
+        organization_id: this.currentOrgId
+      };
+      if (busId) payload.bus_id = busId;
+      if (isUuid(record.id)) payload.id = record.id;
+
+      const { data, error } = await (supabase.from('fuel_records') as any).upsert(payload).select().maybeSingle();
+      if (error) {
+        this.handleDbError('fuel_records.upsert', error);
+      } else if (data?.id) {
+        const idx = this.fuelRecords.findIndex(f => f.id === record.id);
+        if (idx !== -1 && this.fuelRecords[idx].id !== data.id) {
+          this.fuelRecords[idx].id = data.id;
+          saveToStorage('fuelRecords', this.fuelRecords);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('fuel_records.sync', err);
+    }
+  }
+
+  async deleteFuelRecordFromSupabase(id: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (isUuid(id)) {
+        const { error } = await supabase.from('fuel_records').delete().eq('id', id);
+        if (error) this.handleDbError('fuel_records.delete', error);
+      }
+    } catch (err: any) {
+      this.handleDbError('fuel_records.delete', err);
+    }
+  }
+
+  async syncExpenseToSupabase(expense: Expense) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let busId: string | null = null;
+      if (expense.bus_number) {
+        const matched = this.buses.find(b => b.bus_number === expense.bus_number);
+        if (matched && isUuid(matched.id)) busId = matched.id;
+      }
+
+      const payload: any = {
+        category: expense.category,
+        type: expense.type,
+        amount: Number(expense.amount),
+        date: expense.date,
+        description: expense.description,
+        bus_number: expense.bus_number || null,
+        payment_method: expense.payment_method,
+        reference_number: expense.reference_number || null,
+        organization_id: this.currentOrgId
+      };
+      if (busId) payload.bus_id = busId;
+      if (isUuid(expense.id)) payload.id = expense.id;
+
+      const { data, error } = await (supabase.from('expenses') as any).upsert(payload).select().maybeSingle();
+      if (error && error.code !== '42501') {
+        this.handleDbError('expenses.upsert', error);
+      } else if (data?.id) {
+        const idx = this.expenses.findIndex(e => e.id === expense.id);
+        if (idx !== -1 && this.expenses[idx].id !== data.id) {
+          this.expenses[idx].id = data.id;
+          saveToStorage('expenses', this.expenses);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('expenses.sync', err);
+    }
+  }
+
+  async deleteExpenseFromSupabase(id: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (isUuid(id)) {
+        const { error } = await supabase.from('expenses').delete().eq('id', id);
+        if (error && error.code !== '42501') this.handleDbError('expenses.delete', error);
+      }
+    } catch (err: any) {
+      this.handleDbError('expenses.delete', err);
+    }
+  }
+
+  async syncLoanToSupabase(loan: EmiLoan) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let busId: string | null = null;
+      const matched = this.buses.find(b => b.bus_number === loan.bus_number);
+      if (matched && isUuid(matched.id)) busId = matched.id;
+
+      const payload: any = {
+        loan_id: loan.loan_id,
+        lender: loan.lender,
+        bus_number: loan.bus_number,
+        principal_amount: Number(loan.principal_amount),
+        interest_rate: Number(loan.interest_rate),
+        loan_start_date: loan.loan_start_date,
+        term_months: Number(loan.term_months),
+        monthly_emi: Number(loan.monthly_emi),
+        total_paid: Number(loan.total_paid) || 0,
+        outstanding_balance: Number(loan.outstanding_balance),
+        next_due_date: loan.next_due_date,
+        status: loan.status,
+        installments_paid: Number(loan.installments_paid) || 0,
+        installments_total: Number(loan.installments_total),
+        organization_id: this.currentOrgId
+      };
+      if (busId) payload.bus_id = busId;
+      if (isUuid(loan.id)) payload.id = loan.id;
+
+      const { data, error } = await (supabase.from('loans') as any).upsert(payload, {
+        onConflict: 'organization_id,loan_id'
+      }).select().maybeSingle();
+
+      if (error && error.code !== '42501') {
+        this.handleDbError('loans.upsert', error);
+      } else if (data?.id) {
+        const idx = this.loans.findIndex(l => l.loan_id === loan.loan_id);
+        if (idx !== -1 && this.loans[idx].id !== data.id) {
+          this.loans[idx].id = data.id;
+          saveToStorage('loans', this.loans);
+        }
+      }
+    } catch (err: any) {
+      this.handleDbError('loans.sync', err);
+    }
+  }
+
+  async deleteLoanFromSupabase(loanIdOrCode: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      let query = supabase.from('loans').delete();
+      if (isUuid(loanIdOrCode)) {
+        query = query.eq('id', loanIdOrCode);
+      } else {
+        query = query.eq('loan_id', loanIdOrCode);
+      }
+      const { error } = await query;
+      if (error && error.code !== '42501') this.handleDbError('loans.delete', error);
+    } catch (err: any) {
+      this.handleDbError('loans.delete', err);
+    }
+  }
+
+  async syncEmiPaymentToSupabase(payment: EmiPayment) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (!isUuid(payment.loan_id)) return;
+      const payload: any = {
+        loan_id: payment.loan_id,
+        installment_number: Number(payment.installment_number),
+        due_date: payment.due_date,
+        payment_date: payment.payment_date,
+        amount: Number(payment.amount),
+        status: payment.status,
+        reference: payment.reference || null,
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(payment.id)) payload.id = payment.id;
+
+      const { error } = await (supabase.from('emi_payments') as any).insert(payload);
+      if (error && error.code !== '42501') {
+        this.handleDbError('emi_payments.insert', error);
+      }
+    } catch (err: any) {
+      this.handleDbError('emi_payments.sync', err);
+    }
+  }
+
+  async syncGpsVehicleToSupabase(gps: GpsVehicle) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (!isUuid(gps.bus_id)) return;
+      const payload: any = {
+        bus_id: gps.bus_id,
+        bus_number: gps.bus_number,
+        lat: Number(gps.lat),
+        lng: Number(gps.lng),
+        speed: Number(gps.speed),
+        heading: Number(gps.heading) || 0,
+        status: gps.status,
+        battery_level: Number(gps.battery_level) || 100,
+        fuel_level: Number(gps.fuel_level) || 100,
+        current_route: gps.current_route || null,
+        destination: gps.destination || null,
+        last_updated: new Date().toISOString()
+      };
+      const { error } = await (supabase.from('gps_vehicles') as any).upsert(payload);
+      if (error) this.handleDbError('gps_vehicles.upsert', error);
+    } catch (err: any) {
+      this.handleDbError('gps_vehicles.sync', err);
+    }
+  }
+
+  async syncNotificationToSupabase(notif: NotificationItem) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const payload: any = {
+        title: notif.title,
+        message: notif.message,
+        type: notif.type,
+        severity: notif.severity,
+        read: Boolean(notif.read),
+        date: notif.date,
+        link: notif.link || null,
+        user_id: this.currentUserId,
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(notif.id)) payload.id = notif.id;
+      const { error } = await (supabase.from('notifications') as any).insert(payload);
+      if (error && error.code !== '42501') {
+        console.warn('[Notification Sync Notice]', error.message);
+      }
+    } catch (err: any) {
+      console.warn('[Notification Sync Exception]', err);
+    }
+  }
+
+  async syncNotificationReadToSupabase(id: string, read: boolean) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (isUuid(id)) {
+        await supabase.from('notifications').update({ read }).eq('id', id);
+      }
+    } catch (err: any) {
+      console.warn('[Notification Read Exception]', err);
+    }
+  }
+
+  async syncAllNotificationsReadToSupabase() {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      await supabase.from('notifications').update({ read: true }).eq('organization_id', this.currentOrgId);
+    } catch (err: any) {
+      console.warn('[Notification Mark All Exception]', err);
+    }
+  }
+
+  async deleteNotificationFromSupabase(id: string) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      if (isUuid(id)) {
+        await supabase.from('notifications').delete().eq('id', id);
+      }
+    } catch (err: any) {
+      console.warn('[Notification Delete Exception]', err);
+    }
+  }
+
+  async syncAuditLogToSupabase(log: AuditLog) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const payload: any = {
+        timestamp: log.timestamp,
+        user_name: log.user,
+        user_id: this.currentUserId,
+        action: log.action,
+        entity_type: log.entity_type,
+        entity_id: log.entity_id,
+        details: log.details,
+        organization_id: this.currentOrgId
+      };
+      if (isUuid(log.id)) payload.id = log.id;
+      const { error } = await (supabase.from('audit_logs') as any).insert(payload);
+      if (error && error.code !== '42501') {
+        console.warn('[Audit Log Notice]', error.message);
+      }
+    } catch (err: any) {
+      console.warn('[Audit Log Exception]', err);
+    }
+  }
+
+  async syncSettingsToSupabase(settings: SystemSettings) {
+    if (!isSupabaseConfigured || !supabase || !this.currentUserId) return;
+    try {
+      const { error } = await (supabase.from('settings') as any).update({
+        company_name: settings.company_name,
+        currency: settings.currency,
+        currency_symbol: settings.currency_symbol,
+        timezone: settings.timezone,
+        date_format: settings.date_format,
+        fuel_efficiency_alert_threshold: settings.fuel_efficiency_alert_threshold,
+        maintenance_reminder_days: settings.maintenance_reminder_days,
+        low_stock_warning_threshold: settings.low_stock_warning_threshold,
+        notifications_email: settings.notifications_email,
+        notifications_browser: settings.notifications_browser,
+        updated_at: new Date().toISOString()
+      }).eq('organization_id', this.currentOrgId);
+
+      if (error) this.handleDbError('settings.update', error);
+    } catch (err: any) {
+      this.handleDbError('settings.sync', err);
+    }
+  }
+
+  // ============================================================================
+  // AUDIT LOG & NOTIFICATIONS LOGGING
+  // ============================================================================
+
   logAudit(action: string, entity_type: string, entity_id: string, details: string) {
     const newLog: AuditLog = {
-      id: `aud-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: generateEntityId(),
       timestamp: new Date().toISOString(),
       user: this.profile.full_name || 'Fleet Manager',
       action,
@@ -1653,13 +2797,13 @@ class FleetStore {
     };
     this.auditLogs = [newLog, ...this.auditLogs];
     saveToStorage('auditLogs', this.auditLogs);
+    this.syncAuditLogToSupabase(newLog);
     this.notify();
   }
 
-  // Notification helper
   addNotification(title: string, message: string, type: NotificationItem['type'], severity: NotificationItem['severity'], link?: string) {
     const newNotif: NotificationItem = {
-      id: `notif-${Date.now()}`,
+      id: generateEntityId(),
       title,
       message,
       type,
@@ -1670,14 +2814,17 @@ class FleetStore {
     };
     this.notifications = [newNotif, ...this.notifications];
     saveToStorage('notifications', this.notifications);
+    this.syncNotificationToSupabase(newNotif);
     this.notify();
   }
 
-  // BUSES CRUD
+  // ============================================================================
+  // 1. BUSES CRUD
+  // ============================================================================
   addBus(bus: Omit<Bus, 'id'>): Bus {
     const newBus: Bus = {
       ...bus,
-      id: `bus-${Date.now()}`,
+      id: generateEntityId(),
       created_at: new Date().toISOString()
     };
     this.buses = [newBus, ...this.buses];
@@ -1689,7 +2836,7 @@ class FleetStore {
   }
 
   updateBus(id: string, busData: Partial<Bus>): Bus | null {
-    const idx = this.buses.findIndex(b => b.id === id);
+    const idx = this.buses.findIndex(b => b.id === id || b.bus_number === id);
     if (idx === -1) return null;
     const updated = { ...this.buses[idx], ...busData, updated_at: new Date().toISOString() };
     this.buses[idx] = updated;
@@ -1701,21 +2848,23 @@ class FleetStore {
   }
 
   deleteBus(id: string): boolean {
-    const bus = this.buses.find(b => b.id === id);
+    const bus = this.buses.find(b => b.id === id || b.bus_number === id);
     if (!bus) return false;
-    this.buses = this.buses.filter(b => b.id !== id);
+    this.buses = this.buses.filter(b => b.id !== bus.id);
     saveToStorage('buses', this.buses);
     this.logAudit('BUS_DELETED', 'Bus', bus.bus_number, `Deleted vehicle ${bus.bus_number} from fleet.`);
-    this.deleteBusFromSupabase(bus.bus_number);
+    this.deleteBusFromSupabase(bus.id || bus.bus_number);
     this.notify();
     return true;
   }
 
-  // DRIVERS CRUD
+  // ============================================================================
+  // 2. DRIVERS CRUD
+  // ============================================================================
   addDriver(driver: Omit<Driver, 'id'>): Driver {
     const newDriver: Driver = {
       ...driver,
-      id: `drv-${Date.now()}`,
+      id: generateEntityId(),
       created_at: new Date().toISOString()
     };
     this.drivers = [newDriver, ...this.drivers];
@@ -1727,7 +2876,7 @@ class FleetStore {
   }
 
   updateDriver(id: string, driverData: Partial<Driver>): Driver | null {
-    const idx = this.drivers.findIndex(d => d.id === id);
+    const idx = this.drivers.findIndex(d => d.id === id || d.license_number === id);
     if (idx === -1) return null;
     const updated = { ...this.drivers[idx], ...driverData, updated_at: new Date().toISOString() };
     this.drivers[idx] = updated;
@@ -1739,27 +2888,189 @@ class FleetStore {
   }
 
   deleteDriver(id: string): boolean {
-    const driver = this.drivers.find(d => d.id === id);
+    const driver = this.drivers.find(d => d.id === id || d.name === id);
     if (!driver) return false;
-    this.drivers = this.drivers.filter(d => d.id !== id);
+    this.drivers = this.drivers.filter(d => d.id !== driver.id);
     saveToStorage('drivers', this.drivers);
     this.logAudit('DRIVER_REMOVED', 'Driver', driver.name, `De-registered driver ${driver.name}.`);
-    this.deleteDriverFromSupabase(driver.name);
+    this.deleteDriverFromSupabase(driver.id || driver.name);
     this.notify();
     return true;
   }
 
-  // SERVICE RECORDS CRUD
+  // ============================================================================
+  // 3. MECHANICS CRUD
+  // ============================================================================
+  addMechanic(mechanic: Omit<Mechanic, 'id'>): Mechanic {
+    const newMechanic: Mechanic = {
+      ...mechanic,
+      id: generateEntityId()
+    };
+    this.mechanics = [newMechanic, ...this.mechanics];
+    saveToStorage('mechanics', this.mechanics);
+    this.logAudit('MECHANIC_ADDED', 'Mechanic', newMechanic.name, `Added mechanic ${newMechanic.name} (${newMechanic.specialty})`);
+    this.syncMechanicToSupabase(newMechanic);
+    this.notify();
+    return newMechanic;
+  }
+
+  updateMechanic(id: string, mechanicData: Partial<Mechanic>): Mechanic | null {
+    const idx = this.mechanics.findIndex(m => m.id === id || m.name === id);
+    if (idx === -1) return null;
+    const updated = { ...this.mechanics[idx], ...mechanicData };
+    this.mechanics[idx] = updated;
+    saveToStorage('mechanics', this.mechanics);
+    this.logAudit('MECHANIC_UPDATED', 'Mechanic', updated.name, `Updated mechanic details for ${updated.name}`);
+    this.syncMechanicToSupabase(updated);
+    this.notify();
+    return updated;
+  }
+
+  deleteMechanic(id: string): boolean {
+    const mechanic = this.mechanics.find(m => m.id === id || m.name === id);
+    if (!mechanic) return false;
+    this.mechanics = this.mechanics.filter(m => m.id !== mechanic.id);
+    saveToStorage('mechanics', this.mechanics);
+    this.logAudit('MECHANIC_REMOVED', 'Mechanic', mechanic.name, `Removed mechanic ${mechanic.name}.`);
+    this.deleteMechanicFromSupabase(mechanic.id);
+    this.notify();
+    return true;
+  }
+
+  // ============================================================================
+  // 4. ROUTES CRUD
+  // ============================================================================
+  addRoute(route: Omit<Route, 'id'>): Route {
+    const newRoute: Route = {
+      ...route,
+      id: generateEntityId(),
+      created_at: new Date().toISOString()
+    };
+    this.routes = [newRoute, ...this.routes];
+    saveToStorage('routes', this.routes);
+    this.logAudit('ROUTE_CREATED', 'Route', newRoute.route_code, `Configured new route ${newRoute.route_name}`);
+    this.syncRouteToSupabase(newRoute);
+    this.notify();
+    return newRoute;
+  }
+
+  updateRoute(id: string, routeData: Partial<Route>): Route | null {
+    const idx = this.routes.findIndex(r => r.id === id || r.route_code === id);
+    if (idx === -1) return null;
+    const updated = { ...this.routes[idx], ...routeData };
+    this.routes[idx] = updated;
+    saveToStorage('routes', this.routes);
+    this.logAudit('ROUTE_UPDATED', 'Route', updated.route_code, `Updated route details for ${updated.route_name}`);
+    this.syncRouteToSupabase(updated);
+    this.notify();
+    return updated;
+  }
+
+  deleteRoute(id: string): boolean {
+    const route = this.routes.find(r => r.id === id || r.route_code === id);
+    if (!route) return false;
+    this.routes = this.routes.filter(r => r.id !== route.id);
+    saveToStorage('routes', this.routes);
+    this.logAudit('ROUTE_DELETED', 'Route', route.route_code, `Removed route ${route.route_name}`);
+    this.deleteRouteFromSupabase(route.id || route.route_code);
+    this.notify();
+    return true;
+  }
+
+  // ============================================================================
+  // 5. TRIPS CRUD
+  // ============================================================================
+  addTrip(trip: Omit<Trip, 'id'>): { success: boolean; message: string; trip?: Trip } {
+    const vehicleConflict = this.trips.find(t =>
+      t.bus_id === trip.bus_id &&
+      t.date === trip.date &&
+      t.status !== 'completed' &&
+      t.status !== 'cancelled'
+    );
+    if (vehicleConflict) {
+      return {
+        success: false,
+        message: `Schedule Conflict: Bus ${trip.bus_number} is already assigned to Trip ${vehicleConflict.trip_code} on ${trip.date}.`
+      };
+    }
+
+    const driverConflict = this.trips.find(t =>
+      t.driver_id === trip.driver_id &&
+      t.date === trip.date &&
+      t.status !== 'completed' &&
+      t.status !== 'cancelled'
+    );
+    if (driverConflict) {
+      return {
+        success: false,
+        message: `Driver Conflict: Driver ${trip.driver_name} is already assigned to Trip ${driverConflict.trip_code} on ${trip.date}.`
+      };
+    }
+
+    const newTrip: Trip = {
+      ...trip,
+      id: generateEntityId(),
+      created_at: new Date().toISOString()
+    };
+    this.trips = [newTrip, ...this.trips];
+    saveToStorage('trips', this.trips);
+
+    if (newTrip.status === 'in_progress') {
+      const driver = this.drivers.find(d => d.id === newTrip.driver_id || d.name === newTrip.driver_name);
+      if (driver) {
+        this.updateDriver(driver.id, { today_availability: 'on_trip' });
+      }
+    }
+
+    this.logAudit('TRIP_SCHEDULED', 'Trip', newTrip.trip_code, `Scheduled trip ${newTrip.trip_code} for ${newTrip.bus_number} (${newTrip.route_name})`);
+    this.syncTripToSupabase(newTrip);
+    this.notify();
+    return { success: true, message: 'Trip successfully scheduled.', trip: newTrip };
+  }
+
+  updateTrip(id: string, tripData: Partial<Trip>): Trip | null {
+    const idx = this.trips.findIndex(t => t.id === id || t.trip_code === id);
+    if (idx === -1) return null;
+    const updated = { ...this.trips[idx], ...tripData };
+    this.trips[idx] = updated;
+    saveToStorage('trips', this.trips);
+
+    if (updated.status === 'completed') {
+      const driver = this.drivers.find(d => d.id === updated.driver_id || d.name === updated.driver_name);
+      if (driver && driver.today_availability === 'on_trip') {
+        this.updateDriver(driver.id, { today_availability: 'available', total_trips: driver.total_trips + 1 });
+      }
+    }
+
+    this.logAudit('TRIP_UPDATED', 'Trip', updated.trip_code, `Updated trip status to ${updated.status}`);
+    this.syncTripToSupabase(updated);
+    this.notify();
+    return updated;
+  }
+
+  deleteTrip(id: string): boolean {
+    const trip = this.trips.find(t => t.id === id || t.trip_code === id);
+    if (!trip) return false;
+    this.trips = this.trips.filter(t => t.id !== trip.id);
+    saveToStorage('trips', this.trips);
+    this.logAudit('TRIP_DELETED', 'Trip', trip.trip_code, `Cancelled trip ${trip.trip_code}`);
+    this.deleteTripFromSupabase(trip.id || trip.trip_code);
+    this.notify();
+    return true;
+  }
+
+  // ============================================================================
+  // 6. SERVICE RECORDS (MAINTENANCE) CRUD
+  // ============================================================================
   addServiceRecord(record: Omit<ServiceRecord, 'id'>): ServiceRecord {
     const newRecord: ServiceRecord = {
       ...record,
-      id: `srv-${Date.now()}`,
+      id: generateEntityId(),
       created_at: new Date().toISOString()
     };
     this.serviceRecords = [newRecord, ...this.serviceRecords];
     saveToStorage('serviceRecords', this.serviceRecords);
 
-    // If scheduled/in_progress, update bus status to maintenance
     if (newRecord.status === 'in_progress' || newRecord.status === 'scheduled') {
       const bus = this.buses.find(b => b.bus_number === newRecord.bus_number);
       if (bus && bus.status !== 'maintenance') {
@@ -1767,7 +3078,6 @@ class FleetStore {
       }
     }
 
-    // Also record expense in Finance
     this.addExpense({
       category: 'maintenance',
       type: 'expense',
@@ -1779,6 +3089,7 @@ class FleetStore {
     });
 
     this.logAudit('SERVICE_SCHEDULED', 'Maintenance', newRecord.bus_number, `Created ${newRecord.service_type} service for ${newRecord.bus_number}`);
+    this.syncServiceRecordToSupabase(newRecord);
     this.notify();
     return newRecord;
   }
@@ -1790,10 +3101,9 @@ class FleetStore {
     this.serviceRecords[idx] = updated;
     saveToStorage('serviceRecords', this.serviceRecords);
 
-    // If marked completed, update bus status back to active if all other services are complete
     if (updated.status === 'completed') {
-      const pendingServices = this.serviceRecords.filter(s => s.bus_number === updated.bus_number && (s.status === 'in_progress' || s.status === 'scheduled') && s.id !== id);
-      if (pendingServices.length === 0) {
+      const pending = this.serviceRecords.filter(s => s.bus_number === updated.bus_number && (s.status === 'in_progress' || s.status === 'scheduled') && s.id !== id);
+      if (pending.length === 0) {
         const bus = this.buses.find(b => b.bus_number === updated.bus_number);
         if (bus && bus.status === 'maintenance') {
           this.updateBus(bus.id, { status: 'active', last_service_date: updated.service_date, next_service_date: updated.next_service_prediction });
@@ -1802,53 +3112,62 @@ class FleetStore {
     }
 
     this.logAudit('SERVICE_UPDATED', 'Maintenance', updated.bus_number, `Updated maintenance record #${id} to status ${updated.status}`);
+    this.syncServiceRecordToSupabase(updated);
     this.notify();
     return updated;
   }
 
   deleteServiceRecord(id: string): boolean {
+    const record = this.serviceRecords.find(s => s.id === id);
+    if (!record) return false;
     this.serviceRecords = this.serviceRecords.filter(s => s.id !== id);
     saveToStorage('serviceRecords', this.serviceRecords);
+    this.logAudit('SERVICE_DELETED', 'Maintenance', record.bus_number, `Deleted maintenance record for ${record.bus_number}`);
+    this.deleteServiceRecordFromSupabase(id);
     this.notify();
     return true;
   }
 
-  // INVENTORY CRUD
+  // ============================================================================
+  // 7. INVENTORY CRUD & STOCK MOVEMENTS
+  // ============================================================================
   addInventoryItem(item: Omit<InventoryItem, 'id'>): InventoryItem {
     const newItem: InventoryItem = {
       ...item,
-      id: `inv-${Date.now()}`,
+      id: generateEntityId(),
       last_updated: new Date().toISOString().split('T')[0]
     };
     this.inventory = [newItem, ...this.inventory];
     saveToStorage('inventory', this.inventory);
     this.logAudit('INVENTORY_ITEM_ADDED', 'Inventory', newItem.sku, `Added spare part ${newItem.item_name} (${newItem.sku})`);
+    this.syncInventoryItemToSupabase(newItem);
     this.notify();
     return newItem;
   }
 
   updateInventoryItem(id: string, itemData: Partial<InventoryItem>): InventoryItem | null {
-    const idx = this.inventory.findIndex(i => i.id === id);
+    const idx = this.inventory.findIndex(i => i.id === id || i.sku === id);
     if (idx === -1) return null;
     const updated = { ...this.inventory[idx], ...itemData, last_updated: new Date().toISOString().split('T')[0] };
     this.inventory[idx] = updated;
     saveToStorage('inventory', this.inventory);
     this.logAudit('INVENTORY_ITEM_UPDATED', 'Inventory', updated.sku, `Updated inventory for ${updated.item_name}`);
+    this.syncInventoryItemToSupabase(updated);
     this.notify();
     return updated;
   }
 
   deleteInventoryItem(id: string): boolean {
-    const item = this.inventory.find(i => i.id === id);
+    const item = this.inventory.find(i => i.id === id || i.sku === id);
     if (!item) return false;
-    this.inventory = this.inventory.filter(i => i.id !== id);
+    this.inventory = this.inventory.filter(i => i.id !== item.id);
     saveToStorage('inventory', this.inventory);
     this.logAudit('INVENTORY_ITEM_DELETED', 'Inventory', item.sku, `Removed ${item.item_name} from catalogue.`);
+    this.deleteInventoryItemFromSupabase(item.id || item.sku);
     this.notify();
     return true;
   }
 
-  // Inventory Stock Movements (Receipt and Issuance with validation preventing negative stock)
   recordInventoryMovement(movement: Omit<InventoryMovement, 'id'>): { success: boolean; message: string } {
     const item = this.inventory.find(i => i.id === movement.item_id);
     if (!item) return { success: false, message: 'Item not found in inventory catalogue.' };
@@ -1871,7 +3190,6 @@ class FleetStore {
         );
       }
     } else {
-      // Received
       item.current_stock += movement.quantity;
     }
 
@@ -1880,7 +3198,7 @@ class FleetStore {
 
     const newMov: InventoryMovement = {
       ...movement,
-      id: `mov-${Date.now()}`
+      id: generateEntityId()
     };
     this.inventoryMovements = [newMov, ...this.inventoryMovements];
     saveToStorage('inventoryMovements', this.inventoryMovements);
@@ -1891,133 +3209,25 @@ class FleetStore {
       item.sku,
       `${movement.type === 'issued' ? 'Issued' : 'Received'} ${movement.quantity} ${item.unit} of ${item.item_name}`
     );
+    this.syncInventoryMovementToSupabase(newMov);
     this.notify();
     return { success: true, message: `Successfully recorded stock ${movement.type}.` };
   }
 
-  // ROUTES CRUD
-  addRoute(route: Omit<Route, 'id'>): Route {
-    const newRoute: Route = {
-      ...route,
-      id: `rt-${Date.now()}`,
-      created_at: new Date().toISOString()
-    };
-    this.routes = [newRoute, ...this.routes];
-    saveToStorage('routes', this.routes);
-    this.logAudit('ROUTE_CREATED', 'Route', newRoute.route_code, `Configured new route ${newRoute.route_name}`);
-    this.notify();
-    return newRoute;
-  }
-
-  updateRoute(id: string, routeData: Partial<Route>): Route | null {
-    const idx = this.routes.findIndex(r => r.id === id);
-    if (idx === -1) return null;
-    const updated = { ...this.routes[idx], ...routeData };
-    this.routes[idx] = updated;
-    saveToStorage('routes', this.routes);
-    this.logAudit('ROUTE_UPDATED', 'Route', updated.route_code, `Updated route details for ${updated.route_name}`);
-    this.notify();
-    return updated;
-  }
-
-  deleteRoute(id: string): boolean {
-    this.routes = this.routes.filter(r => r.id !== id);
-    saveToStorage('routes', this.routes);
-    this.notify();
-    return true;
-  }
-
-  // TRIPS CRUD (With Schedule Conflict Prevention!)
-  addTrip(trip: Omit<Trip, 'id'>): { success: boolean; message: string; trip?: Trip } {
-    // Conflict check: Check if vehicle is already assigned to an ongoing or scheduled trip at the same date and overlapping time
-    const vehicleConflict = this.trips.find(t => 
-      t.bus_id === trip.bus_id &&
-      t.date === trip.date &&
-      t.status !== 'completed' &&
-      t.status !== 'cancelled'
-    );
-    if (vehicleConflict) {
-      return {
-        success: false,
-        message: `Schedule Conflict: Bus ${trip.bus_number} is already assigned to Trip ${vehicleConflict.trip_code} on ${trip.date}.`
-      };
-    }
-
-    // Driver conflict check
-    const driverConflict = this.trips.find(t => 
-      t.driver_id === trip.driver_id &&
-      t.date === trip.date &&
-      t.status !== 'completed' &&
-      t.status !== 'cancelled'
-    );
-    if (driverConflict) {
-      return {
-        success: false,
-        message: `Driver Conflict: Driver ${trip.driver_name} is already assigned to Trip ${driverConflict.trip_code} on ${trip.date}.`
-      };
-    }
-
-    const newTrip: Trip = {
-      ...trip,
-      id: `trp-${Date.now()}`,
-      created_at: new Date().toISOString()
-    };
-    this.trips = [newTrip, ...this.trips];
-    saveToStorage('trips', this.trips);
-
-    // If trip in progress, mark driver on_trip
-    if (newTrip.status === 'in_progress') {
-      const driver = this.drivers.find(d => d.id === newTrip.driver_id);
-      if (driver) {
-        this.updateDriver(driver.id, { today_availability: 'on_trip' });
-      }
-    }
-
-    this.logAudit('TRIP_SCHEDULED', 'Trip', newTrip.trip_code, `Scheduled trip ${newTrip.trip_code} for ${newTrip.bus_number} (${newTrip.route_name})`);
-    this.notify();
-    return { success: true, message: 'Trip successfully scheduled.', trip: newTrip };
-  }
-
-  updateTrip(id: string, tripData: Partial<Trip>): Trip | null {
-    const idx = this.trips.findIndex(t => t.id === id);
-    if (idx === -1) return null;
-    const updated = { ...this.trips[idx], ...tripData };
-    this.trips[idx] = updated;
-    saveToStorage('trips', this.trips);
-
-    if (updated.status === 'completed') {
-      // Free driver availability
-      const driver = this.drivers.find(d => d.id === updated.driver_id);
-      if (driver && driver.today_availability === 'on_trip') {
-        this.updateDriver(driver.id, { today_availability: 'available', total_trips: driver.total_trips + 1 });
-      }
-    }
-
-    this.logAudit('TRIP_UPDATED', 'Trip', updated.trip_code, `Updated trip status to ${updated.status}`);
-    this.notify();
-    return updated;
-  }
-
-  deleteTrip(id: string): boolean {
-    this.trips = this.trips.filter(t => t.id !== id);
-    saveToStorage('trips', this.trips);
-    this.notify();
-    return true;
-  }
-
-  // FUEL RECORDS CRUD
+  // ============================================================================
+  // 8. FUEL RECORDS CRUD
+  // ============================================================================
   addFuelRecord(record: Omit<FuelRecord, 'id'>): FuelRecord {
     const calculatedCost = record.amount > 0 ? record.amount : record.liters * record.price_per_liter;
     const newRecord: FuelRecord = {
       ...record,
       amount: calculatedCost,
-      id: `fuel-${Date.now()}`,
+      id: generateEntityId(),
       created_at: new Date().toISOString()
     };
     this.fuelRecords = [newRecord, ...this.fuelRecords];
     saveToStorage('fuelRecords', this.fuelRecords);
 
-    // Also record expense in Finance
     this.addExpense({
       category: 'fuel',
       type: 'expense',
@@ -2029,6 +3239,7 @@ class FleetStore {
     });
 
     this.logAudit('FUEL_LOGGED', 'Fuel', newRecord.bus_number, `Logged ${newRecord.liters}L fuel purchase for ${newRecord.bus_number}`);
+    this.syncFuelRecordToSupabase(newRecord);
     this.notify();
     return newRecord;
   }
@@ -2039,22 +3250,29 @@ class FleetStore {
     const updated = { ...this.fuelRecords[idx], ...recordData };
     this.fuelRecords[idx] = updated;
     saveToStorage('fuelRecords', this.fuelRecords);
+    this.syncFuelRecordToSupabase(updated);
     this.notify();
     return updated;
   }
 
   deleteFuelRecord(id: string): boolean {
+    const record = this.fuelRecords.find(f => f.id === id);
+    if (!record) return false;
     this.fuelRecords = this.fuelRecords.filter(f => f.id !== id);
     saveToStorage('fuelRecords', this.fuelRecords);
+    this.logAudit('FUEL_DELETED', 'Fuel', record.bus_number, `Deleted fuel entry for ${record.bus_number}`);
+    this.deleteFuelRecordFromSupabase(id);
     this.notify();
     return true;
   }
 
-  // EXPENSES / TRANSACTIONS CRUD
+  // ============================================================================
+  // 9. EXPENSES CRUD
+  // ============================================================================
   addExpense(expense: Omit<Expense, 'id'>): Expense {
     const newExpense: Expense = {
       ...expense,
-      id: `exp-${Date.now()}`,
+      id: generateEntityId(),
       created_at: new Date().toISOString()
     };
     this.expenses = [newExpense, ...this.expenses];
@@ -2065,6 +3283,7 @@ class FleetStore {
       newExpense.category,
       `${newExpense.type === 'revenue' ? 'Income' : 'Expense'} of ₹${newExpense.amount.toLocaleString()} for ${newExpense.description}`
     );
+    this.syncExpenseToSupabase(newExpense);
     this.notify();
     return newExpense;
   }
@@ -2075,18 +3294,24 @@ class FleetStore {
     const updated = { ...this.expenses[idx], ...expenseData };
     this.expenses[idx] = updated;
     saveToStorage('expenses', this.expenses);
+    this.syncExpenseToSupabase(updated);
     this.notify();
     return updated;
   }
 
   deleteExpense(id: string): boolean {
+    const expense = this.expenses.find(e => e.id === id);
+    if (!expense) return false;
     this.expenses = this.expenses.filter(e => e.id !== id);
     saveToStorage('expenses', this.expenses);
+    this.deleteExpenseFromSupabase(id);
     this.notify();
     return true;
   }
 
-  // EMI LOANS CRUD & Payment Recording
+  // ============================================================================
+  // 10. EMI LOANS & PAYMENTS CRUD
+  // ============================================================================
   addLoan(loan: Omit<EmiLoan, 'id'>): EmiLoan {
     const calculatedEmi = calculateEmi(loan.principal_amount, loan.interest_rate, loan.term_months);
     const newLoan: EmiLoan = {
@@ -2096,28 +3321,40 @@ class FleetStore {
       total_paid: 0,
       installments_paid: 0,
       installments_total: loan.term_months,
-      id: `loan-${Date.now()}`
+      id: generateEntityId()
     };
     this.loans = [newLoan, ...this.loans];
     saveToStorage('loans', this.loans);
     this.logAudit('LOAN_ADDED', 'EMI', newLoan.loan_id, `Registered commercial loan for ${newLoan.bus_number} (Principal: ₹${newLoan.principal_amount.toLocaleString()})`);
+    this.syncLoanToSupabase(newLoan);
     this.notify();
     return newLoan;
   }
 
   updateLoan(id: string, loanData: Partial<EmiLoan>): EmiLoan | null {
-    const idx = this.loans.findIndex(l => l.id === id);
+    const idx = this.loans.findIndex(l => l.id === id || l.loan_id === id);
     if (idx === -1) return null;
     const updated = { ...this.loans[idx], ...loanData };
     this.loans[idx] = updated;
     saveToStorage('loans', this.loans);
+    this.syncLoanToSupabase(updated);
     this.notify();
     return updated;
   }
 
-  // Record an actual EMI installment payment
+  deleteLoan(id: string): boolean {
+    const loan = this.loans.find(l => l.id === id || l.loan_id === id);
+    if (!loan) return false;
+    this.loans = this.loans.filter(l => l.id !== loan.id);
+    saveToStorage('loans', this.loans);
+    this.logAudit('LOAN_DELETED', 'EMI', loan.loan_id, `Cancelled loan agreement ${loan.loan_id}`);
+    this.deleteLoanFromSupabase(loan.id || loan.loan_id);
+    this.notify();
+    return true;
+  }
+
   recordEmiPayment(loanId: string, amount: number, paymentDate: string): { success: boolean; message: string } {
-    const loan = this.loans.find(l => l.id === loanId);
+    const loan = this.loans.find(l => l.id === loanId || l.loan_id === loanId);
     if (!loan) return { success: false, message: 'Loan not found.' };
 
     const paymentAmount = amount > 0 ? amount : loan.monthly_emi;
@@ -2125,7 +3362,6 @@ class FleetStore {
     loan.installments_paid += 1;
     loan.outstanding_balance = Math.max(0, loan.outstanding_balance - paymentAmount);
 
-    // Calculate next due date (add 1 month)
     const nextDate = new Date(loan.next_due_date || paymentDate);
     nextDate.setMonth(nextDate.getMonth() + 1);
     loan.next_due_date = nextDate.toISOString().split('T')[0];
@@ -2136,7 +3372,19 @@ class FleetStore {
 
     saveToStorage('loans', this.loans);
 
-    // Record as Finance Expense
+    const paymentRecord: EmiPayment = {
+      id: generateEntityId(),
+      loan_id: loan.id,
+      installment_number: loan.installments_paid,
+      due_date: loan.next_due_date,
+      payment_date: paymentDate,
+      amount: paymentAmount,
+      status: 'paid',
+      reference: `EMI-INST-${loan.installments_paid}`
+    };
+    this.emiPayments = [paymentRecord, ...this.emiPayments];
+    saveToStorage('emiPayments', this.emiPayments);
+
     this.addExpense({
       category: 'emi',
       type: 'expense',
@@ -2148,16 +3396,36 @@ class FleetStore {
     });
 
     this.logAudit('EMI_PAYMENT_RECORDED', 'EMI', loan.loan_id, `Recorded EMI installment of ₹${paymentAmount.toLocaleString()} for ${loan.bus_number}`);
+    this.syncLoanToSupabase(loan);
+    this.syncEmiPaymentToSupabase(paymentRecord);
     this.notify();
     return { success: true, message: `EMI payment recorded. Remaining installments: ${loan.installments_total - loan.installments_paid}` };
   }
 
-  // NOTIFICATIONS
+  // ============================================================================
+  // 11. GPS VEHICLES
+  // ============================================================================
+  updateGpsVehicle(gpsData: GpsVehicle) {
+    const idx = this.gpsVehicles.findIndex(g => g.bus_id === gpsData.bus_id || g.bus_number === gpsData.bus_number);
+    if (idx !== -1) {
+      this.gpsVehicles[idx] = { ...this.gpsVehicles[idx], ...gpsData, last_updated: new Date().toISOString() };
+    } else {
+      this.gpsVehicles.push(gpsData);
+    }
+    saveToStorage('gpsVehicles', this.gpsVehicles);
+    this.syncGpsVehicleToSupabase(gpsData);
+    this.notify();
+  }
+
+  // ============================================================================
+  // 12. NOTIFICATIONS MANAGEMENT
+  // ============================================================================
   markNotificationAsRead(id: string) {
     const notif = this.notifications.find(n => n.id === id);
     if (notif) {
       notif.read = true;
       saveToStorage('notifications', this.notifications);
+      this.syncNotificationReadToSupabase(id, true);
       this.notify();
     }
   }
@@ -2165,18 +3433,24 @@ class FleetStore {
   markAllNotificationsAsRead() {
     this.notifications.forEach(n => n.read = true);
     saveToStorage('notifications', this.notifications);
+    this.syncAllNotificationsReadToSupabase();
     this.notify();
   }
 
   deleteNotification(id: string) {
     this.notifications = this.notifications.filter(n => n.id !== id);
     saveToStorage('notifications', this.notifications);
+    this.deleteNotificationFromSupabase(id);
     this.notify();
   }
 
-  // PROFILE & SETTINGS
+  // ============================================================================
+  // 13. USER PROFILE & SYSTEM SETTINGS
+  // ============================================================================
   updateProfile(profileData: Partial<UserProfile>) {
-    this.profile = { ...this.profile, ...profileData };
+    // Role update is omitted to prevent client-side privilege escalation
+    const { role: _omittedRole, ...safeData } = profileData;
+    this.profile = { ...this.profile, ...safeData };
     saveToStorage('profile', this.profile);
     this.logAudit('PROFILE_UPDATED', 'User', this.profile.email, 'Updated user profile information');
     this.notify();
@@ -2186,10 +3460,13 @@ class FleetStore {
     this.settings = { ...this.settings, ...settingsData };
     saveToStorage('settings', this.settings);
     this.logAudit('SETTINGS_CHANGED', 'System', 'Global', 'Updated system preferences and alert thresholds');
+    this.syncSettingsToSupabase(this.settings);
     this.notify();
   }
 
-  // RESET TO DEMO DATA
+  // ============================================================================
+  // DEMO MODE ISOLATED RESET
+  // ============================================================================
   resetToDemo() {
     if (this.currentUserId && !this.isDemoMode) {
       this.clearUserData();
@@ -2206,6 +3483,7 @@ class FleetStore {
     this.fuelRecords = INITIAL_FUEL_RECORDS;
     this.expenses = INITIAL_EXPENSES;
     this.loans = INITIAL_LOANS;
+    this.emiPayments = [];
     this.gpsVehicles = INITIAL_GPS_VEHICLES;
     this.notifications = INITIAL_NOTIFICATIONS;
     this.auditLogs = INITIAL_AUDIT_LOGS;
@@ -2222,6 +3500,7 @@ class FleetStore {
     saveToStorage('fuelRecords', this.fuelRecords);
     saveToStorage('expenses', this.expenses);
     saveToStorage('loans', this.loans);
+    saveToStorage('emiPayments', this.emiPayments);
     saveToStorage('gpsVehicles', this.gpsVehicles);
     saveToStorage('notifications', this.notifications);
     saveToStorage('auditLogs', this.auditLogs);

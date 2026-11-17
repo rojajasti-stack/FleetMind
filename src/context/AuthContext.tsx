@@ -20,13 +20,14 @@ export interface AuthContextType {
   isAuthenticated: boolean;
   isSupabaseConfigured: boolean;
   authMode: 'supabase' | 'demo';
+  profileError: string | null;
   
   // Auth Operations
   signInWithEmail: (email: string, password: string, captchaToken?: string) => Promise<{ error: string | null }>;
   signUpWithEmail: (
     email: string,
     password: string,
-    metadata: { fullName: string; companyName?: string; role?: UserProfile['role'] },
+    metadata: { fullName: string; companyName?: string },
     captchaToken?: string
   ) => Promise<{ error: string | null; needsEmailVerification?: boolean }>;
   signInWithGoogle: () => Promise<{ error: string | null }>;
@@ -65,11 +66,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [demoLoggedIn, setDemoLoggedIn] = useState<boolean>(() => {
     return localStorage.getItem('fleetmind_auth_token') === 'demo_session_active';
   });
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   const authMode: 'supabase' | 'demo' = isSupabaseConfigured && !demoLoggedIn ? 'supabase' : 'demo';
 
-  // Load profile from Supabase or fallback to user metadata / clean account
+  // Load profile from Supabase with strict security (never assign Super Admin or upsert privileged roles)
   const loadProfile = useCallback(async (userId?: string, userEmail?: string, authUser?: User | null) => {
+    setProfileError(null);
     if (isSupabaseConfigured && supabase && userId) {
       try {
         const { data, error } = await supabase
@@ -78,71 +81,84 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .eq('id', userId)
           .maybeSingle();
 
-        if (data && !error) {
+        if (error) {
+          console.error('[Auth Security] Profile query error:', error.message);
+          setProfileError(`Could not load profile from database: ${error.message}`);
+          // Secure fallback: least-privilege 'Normal User', NEVER elevate to Super Admin
+          const fallbackProfile: UserProfile = {
+            id: userId,
+            full_name: userEmail ? formatNameFromEmail(userEmail) : 'Fleet Operator',
+            email: userEmail || '',
+            phone: '',
+            job_title: 'Fleet Operations',
+            company_name: 'FleetMind Logistics',
+            role: 'Normal User'
+          };
+          setProfile(fallbackProfile);
+          fleetStore.setUser(userId, userEmail, fallbackProfile);
+          return;
+        }
+
+        if (data) {
+          // Retrieve the user's actual role strictly from public.profiles
+          const verifiedRole = (data.role as UserProfile['role']) || 'Normal User';
           const loaded: UserProfile = {
             id: data.id,
-            full_name: data.full_name || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Manager'),
+            full_name: data.full_name || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Operator'),
             email: data.email || userEmail || '',
             phone: data.phone || '',
-            job_title: data.job_title || 'Director of Fleet Operations',
+            job_title: data.job_title || 'Fleet Operations',
             company_name: data.company_name || 'FleetMind Logistics',
             avatar_url: data.avatar_url || authUser?.user_metadata?.avatar_url || undefined,
-            role: (data.role as UserProfile['role']) || 'Super Admin'
+            role: verifiedRole,
+            organization_id: (data as any).organization_id || undefined
           };
           setProfile(loaded);
           fleetStore.setUser(userId, userEmail, loaded);
           return;
+        } else {
+          // Profile record missing in PostgreSQL: Fail securely!
+          // NEVER automatically assign Super Admin.
+          // NEVER upsert privileged roles from frontend code.
+          console.warn('[Auth Security] No profile row exists in public.profiles for user:', userId);
+          setProfileError('Your user profile has not been provisioned by an administrator yet. Restricted read view applied.');
+          const unprovisionedProfile: UserProfile = {
+            id: userId,
+            full_name: authUser?.user_metadata?.full_name || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Operator'),
+            email: userEmail || '',
+            phone: authUser?.phone || '',
+            job_title: 'Unprovisioned User',
+            company_name: 'FleetMind Logistics',
+            avatar_url: authUser?.user_metadata?.avatar_url || undefined,
+            role: 'Normal User'
+          };
+          setProfile(unprovisionedProfile);
+          fleetStore.setUser(userId, userEmail, unprovisionedProfile);
+          return;
         }
-      } catch {
-        // Fall back gracefully
+      } catch (err: any) {
+        console.error('[Auth Security] Profile load exception:', err);
+        setProfileError('An unexpected error occurred while loading profile.');
+        const safeProfile: UserProfile = {
+          id: userId,
+          full_name: userEmail ? formatNameFromEmail(userEmail) : 'Fleet Operator',
+          email: userEmail || '',
+          phone: '',
+          job_title: 'Fleet Operations',
+          company_name: 'FleetMind Logistics',
+          role: 'Normal User'
+        };
+        setProfile(safeProfile);
+        fleetStore.setUser(userId, userEmail, safeProfile);
+        return;
       }
-    }
-
-    // If no Supabase profile row exists yet, construct a clean user profile from auth metadata
-    if (userId) {
-      const metadataName = authUser?.user_metadata?.full_name || authUser?.user_metadata?.name;
-      const derivedName = metadataName || (userEmail ? formatNameFromEmail(userEmail) : 'Fleet Manager');
-      const cleanUserProfile: UserProfile = {
-        id: userId,
-        full_name: derivedName,
-        email: userEmail || '',
-        phone: authUser?.phone || '',
-        job_title: 'Director of Fleet Operations',
-        company_name: authUser?.user_metadata?.company_name || 'FleetMind Logistics',
-        avatar_url: authUser?.user_metadata?.avatar_url || undefined,
-        role: (authUser?.user_metadata?.role as UserProfile['role']) || 'Super Admin'
-      };
-      setProfile(cleanUserProfile);
-      fleetStore.setUser(userId, userEmail, cleanUserProfile);
-
-      // Try to create/upsert profile row in Supabase profiles table in background
-      if (isSupabaseConfigured && supabase) {
-        (async () => {
-          try {
-            let orgId = '00000000-0000-0000-0000-000000000001';
-            const { data: orgData } = await (supabase.from('organizations' as any) as any).select('id').limit(1).maybeSingle();
-            if (orgData?.id) orgId = orgData.id;
-
-            await (supabase.from('profiles') as any).upsert({
-              id: userId,
-              organization_id: orgId,
-              full_name: cleanUserProfile.full_name,
-              email: cleanUserProfile.email,
-              role: cleanUserProfile.role,
-              job_title: cleanUserProfile.job_title,
-              company_name: cleanUserProfile.company_name
-            }, { onConflict: 'id' });
-          } catch (e) {
-            console.warn('[Auth] Background profile upsert notice:', e);
-          }
-        })();
-      }
-      return;
     }
 
     // Default profile only for guest/demo mode
-    setProfile(fleetStore.profile);
-  }, []);
+    if (demoLoggedIn) {
+      setProfile(fleetStore.profile);
+    }
+  }, [demoLoggedIn]);
 
   // Initialize Session
   useEffect(() => {
@@ -166,8 +182,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               await loadProfile(initialSession.user.id, initialSession.user.email, initialSession.user);
             } else if (demoLoggedIn) {
               // Running in local demo mode
-              fleetStore.setUser(null, null, null);
+              fleetStore.loadDemoData();
               setProfile(fleetStore.profile);
+            } else {
+              fleetStore.setUser(null, null, null);
+              setProfile(null);
             }
           }
         } catch (err) {
@@ -300,8 +319,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         options: {
           data: {
             full_name: metadata.fullName,
-            company_name: metadata.companyName || 'Fleet Operations',
-            role: metadata.role || 'Fleet Manager'
+            company_name: metadata.companyName || 'Fleet Operations'
+            // Never trust client-provided role metadata. Database trigger assigns 'Normal User' securely.
           },
           emailRedirectTo: `${window.location.origin}/`,
           ...(captchaToken ? { captchaToken } : {})
@@ -436,6 +455,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateUserProfile = async (data: Partial<UserProfile>) => {
     if (isSupabaseConfigured && supabase && user) {
       try {
+        // Disallow self-assignment or modification of role from client frontend
         const { error } = await supabase
           .from('profiles')
           .update({
@@ -444,7 +464,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             job_title: data.job_title,
             company_name: data.company_name,
             avatar_url: data.avatar_url,
-            role: data.role,
+            // role is explicitly omitted to prevent privilege escalation
             updated_at: new Date().toISOString()
           })
           .eq('id', user.id);
@@ -548,7 +568,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginAsDemo = () => {
     localStorage.setItem('fleetmind_auth_token', 'demo_session_active');
     setDemoLoggedIn(true);
-    fleetStore.setUser(null, null, null);
+    fleetStore.loadDemoData();
     setProfile(fleetStore.profile);
   };
 
@@ -607,6 +627,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user,
       session,
       profile,
+      profileError,
       loading,
       isAuthenticated,
       isSupabaseConfigured,
@@ -636,6 +657,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user,
       session,
       profile,
+      profileError,
       loading,
       isAuthenticated,
       authMode,
