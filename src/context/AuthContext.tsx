@@ -58,6 +58,20 @@ export interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/**
+ * Resolves the authoritative authentication redirect destination.
+ * For local development, preserves localhost:PORT.
+ * For production, strictly redirects to the official domain: https://fleet-mind-azure.vercel.app
+ * This prevents users from being sent to protected Vercel preview deployments.
+ */
+export const getAuthRedirectUrl = (path: string = ''): string => {
+  const isLocalhost = typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const base = isLocalhost ? window.location.origin : 'https://fleet-mind-azure.vercel.app';
+  const cleanPath = path ? (path.startsWith('/') ? path : `/${path}`) : '/';
+  return `${base}${cleanPath}`;
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -328,7 +342,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             company_name: metadata.companyName || 'Fleet Operations'
             // Never trust client-provided role metadata. Database trigger assigns 'Normal User' securely.
           },
-          emailRedirectTo: `${window.location.origin}/`,
+          emailRedirectTo: getAuthRedirectUrl(),
           ...(captchaToken ? { captchaToken } : {})
         }
       });
@@ -387,7 +401,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/`
+          redirectTo: getAuthRedirectUrl()
         }
       });
       if (error) return { error: error.message };
@@ -428,7 +442,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: getAuthRedirectUrl('/reset-password'),
         ...(captchaToken ? { captchaToken } : {})
       });
       if (error) return { error: error.message };
